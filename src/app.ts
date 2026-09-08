@@ -219,6 +219,23 @@ app.get("/health", (req: Request, res: Response) => {
   });
 });
 
+// Database offline error middleware (handles Mongoose disconnection gracefully)
+app.use((err: any, req: Request, res: Response, next: any) => {
+  if (
+    err?.name === "MongooseError" ||
+    err?.name === "MongoNetworkError" ||
+    err?.name === "MongoServerSelectionError" ||
+    (err?.message && (err.message.includes("buffering timed out") || err.message.includes("not connected") || err.message.includes("Topology is closed")))
+  ) {
+    console.warn("[AI Studio] Database offline — returning fallback response");
+    if (req.method === "GET") {
+      return res.status(200).json(req.path.endsWith("s") || req.path.endsWith("s/") ? [] : {});
+    }
+    return res.status(503).json({ error: "Service temporarily unavailable (database offline)" });
+  }
+  next(err);
+});
+
 // 404 handler for undefined routes (Express 5 compatible)
 app.use((req: Request, res: Response) => {
   res.status(404).json({

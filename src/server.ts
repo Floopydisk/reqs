@@ -3,43 +3,31 @@ import http from "http";
 import { initWebsocket } from "./utils/websocket";
 import { initQueue } from "./utils/queue";
 
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || "3000", 10);
 const server = http.createServer(app);
 
-// Function to start the server with automatic port increment if needed
+// Function to start the server
 const startServer = async (port: number) => {
   try {
-    // Initialize database and scheduler first
-    await initializeApp();
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`✅ Server is running on port ${port} (0.0.0.0)`);
+      console.log(`📚 API Documentation: http://localhost:${port}/api-docs`);
+      console.log(`🏠 Root endpoint: http://localhost:${port}/`);
+      console.log(`💚 Health check: http://localhost:${port}/health`);
+    });
+
+    server.on("error", (e: NodeJS.ErrnoException) => {
+      console.error("Server error:", e);
+    });
+
+    // Initialize database and scheduler in background
+    initializeApp().catch((err) => {
+      console.warn("App initialization warning:", err);
+    });
 
     // Optional websocket initialization (no-op if disabled or dependency missing)
     initWebsocket(server);
     initQueue(); // optional queue, no-op unless ENABLE_QUEUES=true and bullmq installed
-
-    server.listen(port);
-
-    server.on("error", (e: NodeJS.ErrnoException) => {
-      if (e.code === "EADDRINUSE") {
-        console.warn(
-          `Port ${port} is already in use, trying ${port + 1} instead`
-        );
-        server.close();
-        startServer(port + 1);
-      } else {
-        console.error("Server error:", e);
-      }
-    });
-
-    server.on("listening", () => {
-      const addr = server.address();
-      const actualPort = typeof addr === "object" && addr ? addr.port : port;
-      console.log(`✅ Server is running on port ${actualPort}`);
-      console.log(
-        `📚 API Documentation: http://localhost:${actualPort}/api-docs`
-      );
-      console.log(`🏠 Root endpoint: http://localhost:${actualPort}/`);
-      console.log(`💚 Health check: http://localhost:${actualPort}/health`);
-    });
 
     // Handle unhandled promise rejections
     process.on("unhandledRejection", (err: any) => {

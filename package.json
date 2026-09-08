@@ -4,7 +4,7 @@
   "description": "API for Requisition Management Platform",
   "main": "server.ts",
   "scripts": {
-    "dev": "nodemon --files ./src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "build": "cross-env NODE_OPTIONS=--max_old_space_size=2048 tsc --incremental false",
     "build:windows": "set NODE_OPTIONS=--max_old_space_size=2048 && tsc",
@@ -18,7 +18,6 @@
     "@types/node-cron": "^3.0.11",
     "archiver": "^7.0.1",
     "axios": "^1.19.0",
-    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "body-parser": "^2.3.0",
     "bullmq": "^5.81.3",
@@ -49,7 +48,6 @@
     "uuid": "^11.1.1"
   },
   "devDependencies": {
-    "@types/bcrypt": "^6.0.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
@@ -67,9 +65,7 @@
     "@typescript-eslint/parser": "5.62.0",
     "cross-env": "^10.1.0",
     "eslint": "8.57.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3"
-  },
-  "onlyBuiltDependencies": {
-    "@google/gemini-cli": "github:google-gemini/gemini-cli"
   }
 }
