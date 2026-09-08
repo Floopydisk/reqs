@@ -1,0 +1,28 @@
+Checked without changing anything (and did not touch `/requisite`).
+
+| Request | Result |
+|---|---|
+| `PUT /purchase-orders/{id}/hof-reject` | Not implemented. Only shared `PUT /api/purchase-orders/:id/reject` exists. |
+| `PUT /purchase-orders/{id}/hhr-reject` | Not implemented. Same shared endpoint accepts either role. It also permits HHR rejection while still `submitted`, before HOF approval. |
+| `PUT /purchase-orders/{id}` PM edits submitted PO items | Partially implemented: PM owner can edit `submitted` items and approvals are cleared. But it also permits `draft` and legacy `issued`; no optimistic-concurrency check/audit diff; route blocks the admin override that the controller tries to support. |
+| `POST /categories` inline vendor category creation | Not at that path. Implemented as `POST /api/vendor-categories`, PM/admin-only, with trimmed case-insensitive duplicate checking. It does not record creator/audit data. |
+| HHRA all-company requisition list | Already present through `GET /api/requisitions?page=&limit=`—`HHRA` is included in the full-visibility role branch. |
+
+The exact B1 “active bidding” API value is:
+
+```text
+vendorBidding
+```
+
+It is the `RequisitionStatus.VENDOR_BIDDING` enum value. Frontend should watch for `status === "vendorBidding"`.
+
+Backend-only feedback items:
+
+- **D2 — mostly implemented:** HHR/HHRA are granted full requisition list visibility and the detail lookup is by requisition ID. The item-level HHR approval logic also locates by requisition ID and checks `isWorkTool`. I could not find the required end-to-end regression test.
+- **G2 — partly implemented:** RFQ PDFs render metadata, then an item grid, then evaluation criteria/terms. But long item descriptions can overlap later rows because row height is not calculated from wrapped text; continuation-page headers are absent; no PDF regression tests were found.
+- **G3 — incomplete:** The PDF title and metadata block exist, but the required **issue date** and **requester** are missing. Location is only `name - address`, not a full structured address, and date formatting uses the host locale without an explicit timezone policy.
+- **H10 — incomplete / security concern:** `/api/purchase-orders/:id/pdf` correctly requires `status === "approved"` plus an HHR approval. However, it writes a persistent `pdfUrl` to S3, while the PO remains serializable with that URL; this can bypass the controller gate if the storage URL is directly reachable. It generates from the current PO rather than an immutable approved snapshot, and there are no route-level tests for the bypass/approval matrix.
+
+One additional rejection bug: the shared reject handler changes the PO status to `rejected`, but does not set the approval record’s `status: "rejected"` or `rejectedAt`, despite those schema fields existing.
+
+I was unable to run the TypeScript build because the local process runner failed to start PowerShell (`Windows error 1920`); no repository changes were made.

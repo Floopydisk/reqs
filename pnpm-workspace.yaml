@@ -1,0 +1,10 @@
+allowBuilds:
+  '@scarf/scarf': true
+  bcrypt: true
+  msgpackr-extract: true
+onlyBuiltDependencies:
+  - '@scarf/scarf'
+  - bcrypt
+  - keytar
+  - msgpackr-extract
+  - node-pty
