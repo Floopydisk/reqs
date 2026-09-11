@@ -1,3 +1,6 @@
+import { db } from "../db";
+import { users, requisitions } from "../db/schema";
+import { eq, desc } from "drizzle-orm";
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
@@ -150,7 +153,7 @@ export const getRequisitionsByUser = async (
     const { userId } = req.params;
 
     // Verify user exists
-    const user = await User.findById(userId);
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)) });
     if (!user) {
       res.status(404).json({ success: false, message: "User not found" });
       return;
@@ -169,22 +172,105 @@ export const getRequisitionsByUser = async (
     }
 
     // Execute query with pagination
-    const total = await Requisition.countDocuments(query);
-    const requisitions = await Requisition.find(query)
-      .skip(startIndex)
-      .limit(limit)
-      .sort({ createdAt: -1 })
-      .populate("department", "name")
-      .populate("requester", "firstName lastName email")
-      .lean();
+    try {
+      const total = await Requisition.countDocuments(query);
+      const requisitionsList = await Requisition.find(query)
+        .skip(startIndex)
+        .limit(limit)
+        .sort({ createdAt: -1 })
+        .populate("department", "name")
+        .populate("requester", "firstName lastName email")
+        .lean();
+
+      res.status(200).json({
+        success: true,
+        count: requisitionsList.length,
+        total,
+        currentPage: page,
+        totalPages: Math.ceil(total / limit) || 1,
+        data: requisitionsList,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgReqs = await db.query.requisitions.findMany({
+      where: eq(requisitions.requesterId, String(userId)),
+      with: {
+        department: true,
+        requester: true,
+        items: true,
+        approvals: true,
+      },
+      orderBy: [desc(requisitions.createdAt)],
+    });
+
+    let filtered = pgReqs;
+    if (status) {
+      filtered = filtered.filter((r) => r.status === status);
+    }
+    const totalPg = filtered.length;
+    const paginated = filtered.slice(startIndex, startIndex + limit);
+
+    const data = paginated.map((r) => ({
+      _id: r.id,
+      requisitionNumber: r.requisitionNumber,
+      title: r.title,
+      urgency: r.urgency,
+      justification: r.justification,
+      deliveryLocation: r.deliveryLocationId,
+      deliveryDate: r.deliveryDate,
+      paymentStatus: r.paymentStatus,
+      paymentAmount: r.paymentAmount,
+      requester: r.requester
+        ? {
+            _id: r.requester.id,
+            firstName: r.requester.firstName,
+            lastName: r.requester.lastName,
+            email: r.requester.email,
+          }
+        : r.requesterId,
+      department: r.department
+        ? {
+            _id: r.department.id,
+            name: r.department.name,
+            code: r.department.code,
+          }
+        : r.departmentId,
+      status: r.status,
+      items:
+        r.items?.map((it) => ({
+          _id: it.id,
+          itemName: it.itemName,
+          itemType: it.itemType,
+          preferredBrand: it.preferredBrand,
+          itemDescription: it.itemDescription,
+          uploadImage: it.uploadImage,
+          units: it.units,
+          UOM: it.UOM,
+          status: it.status,
+        })) || [],
+      approvals:
+        r.approvals?.map((ap) => ({
+          _id: ap.id,
+          stage: ap.stage,
+          approver: ap.approverId,
+          status: ap.status,
+          comments: ap.comments,
+          timestamp: ap.timestamp,
+        })) || [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      count: requisitions.length,
-      total,
+      count: data.length,
+      total: totalPg,
       currentPage: page,
-      totalPages: Math.ceil(total / limit),
-      data: requisitions,
+      totalPages: Math.ceil(totalPg / limit) || 1,
+      data,
     });
   } catch (error) {
     next(error);
@@ -344,26 +430,130 @@ export const getRequisitions = async (
     // Calculate skip value for pagination
     const skip = (page - 1) * limit;
 
-    // Get total count for pagination
-    const total = await Requisition.countDocuments(query);
+    // Try MongoDB first
+    try {
+      const total = await Requisition.countDocuments(query);
+      const requisitions = await Requisition.find(query)
+        .populate("requester", "firstName lastName email")
+        .populate("department", "name code")
+        .populate("items.recommendedVendor")
+        .sort({ [sortBy]: sortOrder })
+        .skip(skip)
+        .limit(limit);
 
-    // Execute query with pagination and sorting
-    const requisitions = await Requisition.find(query)
-      .populate("requester", "firstName lastName email")
-      .populate("department", "name code")
-      .populate("items.recommendedVendor")
-      .sort({ [sortBy]: sortOrder })
-      .skip(skip)
-      .limit(limit);
+      res.status(200).json({
+        success: true,
+        data: requisitions,
+        pagination: {
+          total,
+          page,
+          limit,
+          pages: Math.ceil(total / limit) || 1,
+        },
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    let allPg = await db.query.requisitions.findMany({
+      with: {
+        requester: true,
+        department: true,
+        items: true,
+        approvals: true,
+      },
+      orderBy: [desc(requisitions.createdAt)],
+    });
+
+    const currentUserId = String(req.user?._id || req.user?.id || "");
+    const currentUserRole = req.user?.role;
+
+    if (currentUserRole === UserRole.STAFF) {
+      allPg = allPg.filter((r) => r.requesterId === currentUserId);
+    } else if (currentUserRole === UserRole.DEPARTMENT_HEAD) {
+      const userDeptId = normalizeObjectId(req.user?.department);
+      allPg = allPg.filter(
+        (r) =>
+          r.requesterId === currentUserId ||
+          (userDeptId && r.departmentId === userDeptId),
+      );
+    }
+
+    if (title) {
+      const t = title.toLowerCase();
+      allPg = allPg.filter((r) => r.title?.toLowerCase().includes(t));
+    }
+    if (status) {
+      if (Array.isArray(status)) {
+        allPg = allPg.filter((r) => status.includes(r.status || ""));
+      } else {
+        allPg = allPg.filter((r) => r.status === status);
+      }
+    }
+
+    const totalPg = allPg.length;
+    const paginated = allPg.slice(skip, skip + limit);
+
+    const data = paginated.map((r) => ({
+      _id: r.id,
+      requisitionNumber: r.requisitionNumber,
+      title: r.title,
+      urgency: r.urgency,
+      justification: r.justification,
+      deliveryLocation: r.deliveryLocationId,
+      deliveryDate: r.deliveryDate,
+      paymentStatus: r.paymentStatus,
+      paymentAmount: r.paymentAmount,
+      requester: r.requester
+        ? {
+            _id: r.requester.id,
+            firstName: r.requester.firstName,
+            lastName: r.requester.lastName,
+            email: r.requester.email,
+          }
+        : r.requesterId,
+      department: r.department
+        ? {
+            _id: r.department.id,
+            name: r.department.name,
+            code: r.department.code,
+          }
+        : r.departmentId,
+      status: r.status,
+      items:
+        r.items?.map((it) => ({
+          _id: it.id,
+          itemName: it.itemName,
+          itemType: it.itemType,
+          preferredBrand: it.preferredBrand,
+          itemDescription: it.itemDescription,
+          uploadImage: it.uploadImage,
+          units: it.units,
+          UOM: it.UOM,
+          status: it.status,
+        })) || [],
+      approvals:
+        r.approvals?.map((ap) => ({
+          _id: ap.id,
+          stage: ap.stage,
+          approver: ap.approverId,
+          status: ap.status,
+          comments: ap.comments,
+          timestamp: ap.timestamp,
+        })) || [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      data: requisitions,
+      data,
       pagination: {
-        total,
+        total: totalPg,
         page,
         limit,
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(totalPg / limit) || 1,
       },
     });
   } catch (error) {
@@ -380,30 +570,109 @@ export const getRequisition = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const requisition = await Requisition.findById(req.params.id)
-      .populate("requester", "firstName lastName email")
-      .populate("department", "name code")
-      .populate("items.recommendedVendor")
-      .populate("relatedRfqs", "title rfqNumber")
-      .populate("relatedPos", "title poNumber")
-      .populate({
-        // set strictpopulate to false to allow nested populate
-        strictPopulate: false,
-        path: "bids",
-        populate: {
-          path: "vendor",
-          select: "name contactPerson email",
-        },
-      })
-      .populate({ strictPopulate: false, path: "selectedBid" })
-      .populate({ strictPopulate: false, path: "purchaseOrder" })
-      .populate({ strictPopulate: false, path: "delivery" });
+    const reqId = String(req.params.id);
+    let requisition: any = null;
+    try {
+      requisition = await Requisition.findById(reqId)
+        .populate("requester", "firstName lastName email")
+        .populate("department", "name code")
+        .populate("items.recommendedVendor")
+        .populate("relatedRfqs", "title rfqNumber")
+        .populate("relatedPos", "title poNumber")
+        .populate({
+          // set strictpopulate to false to allow nested populate
+          strictPopulate: false,
+          path: "bids",
+          populate: {
+            path: "vendor",
+            select: "name contactPerson email",
+          },
+        })
+        .populate({ strictPopulate: false, path: "selectedBid" })
+        .populate({ strictPopulate: false, path: "purchaseOrder" })
+        .populate({ strictPopulate: false, path: "delivery" });
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
 
     if (!requisition) {
-      res
-        .status(404)
-        .json({ success: false, message: "Requisition not found" });
-      return;
+      const pgReq = await db.query.requisitions.findFirst({
+        where: eq(requisitions.id, reqId),
+        with: {
+          requester: true,
+          department: true,
+          items: true,
+          approvals: true,
+        },
+      });
+
+      if (!pgReq) {
+        res
+          .status(404)
+          .json({ success: false, message: "Requisition not found" });
+        return;
+      }
+
+      requisition = {
+        _id: pgReq.id,
+        requisitionNumber: pgReq.requisitionNumber,
+        title: pgReq.title,
+        urgency: pgReq.urgency,
+        justification: pgReq.justification,
+        deliveryLocation: pgReq.deliveryLocationId,
+        deliveryDate: pgReq.deliveryDate,
+        paymentStatus: pgReq.paymentStatus,
+        paymentAmount: pgReq.paymentAmount,
+        paymentDate: pgReq.paymentDate,
+        paymentReference: pgReq.paymentReference,
+        paymentNotes: pgReq.paymentNotes,
+        paymentBy: pgReq.paymentById,
+        requester: pgReq.requester
+          ? {
+              _id: pgReq.requester.id,
+              firstName: pgReq.requester.firstName,
+              lastName: pgReq.requester.lastName,
+              email: pgReq.requester.email,
+            }
+          : pgReq.requesterId,
+        department: pgReq.department
+          ? {
+              _id: pgReq.department.id,
+              name: pgReq.department.name,
+              code: pgReq.department.code,
+            }
+          : pgReq.departmentId,
+        status: pgReq.status,
+        items:
+          pgReq.items?.map((it) => ({
+            _id: it.id,
+            itemName: it.itemName,
+            itemType: it.itemType,
+            preferredBrand: it.preferredBrand,
+            itemDescription: it.itemDescription,
+            uploadImage: it.uploadImage,
+            units: it.units,
+            UOM: it.UOM,
+            status: it.status,
+            departmentApprovedBy: it.departmentApprovedById,
+            departmentApprovedAt: it.departmentApprovedAt,
+            hrApprovedBy: it.hrApprovedById,
+            hrApprovedAt: it.hrApprovedAt,
+            hhraApprovedBy: it.hhraApprovedById,
+            hhraApprovedAt: it.hhraApprovedAt,
+          })) || [],
+        approvals:
+          pgReq.approvals?.map((ap) => ({
+            _id: ap.id,
+            stage: ap.stage,
+            approver: ap.approverId,
+            status: ap.status,
+            comments: ap.comments,
+            timestamp: ap.timestamp,
+          })) || [],
+        createdAt: pgReq.createdAt,
+        updatedAt: pgReq.updatedAt,
+      };
     }
 
     // Check if user has permission to view this requisition
@@ -1031,10 +1300,8 @@ export const getEligibleApprovers = async (
       }
     }
 
-    const approvers = await User.find(filter)
-      .select("_id firstName lastName email role designation department isActive")
-      .populate("department", "name code")
-      .sort({ firstName: 1, lastName: 1 });
+    const mongooseApprovers = await User.find(filter).select("_id firstName lastName email role designation department isActive").populate("department", "name code").sort({ firstName: 1, lastName: 1 });
+  const approvers = mongooseApprovers.map(a => ({ id: a._id.toString(), ...a.toObject() }));
 
     res.status(200).json({
       success: true,
@@ -1088,7 +1355,7 @@ export const submitRequisition = async (
     let targetApproverUser: any = null;
 
     if (selectedApproverId) {
-      targetApproverUser = await User.findById(selectedApproverId);
+      targetApproverUser = await db.query.users.findFirst({ where: eq(users.id, String(String(selectedApproverId))) });
       if (!targetApproverUser || !targetApproverUser.isActive) {
         res.status(400).json({
           success: false,
@@ -1109,14 +1376,14 @@ export const submitRequisition = async (
       // Fallback to department.head for legacy / staff requests
       const department = await Department.findById(requisition.department);
       if (department?.head) {
-        targetApproverUser = await User.findById(department.head);
+        targetApproverUser = await db.query.users.findFirst({ where: eq(users.id, String(String(department.head))) });
       }
     }
 
     // Update status to submitted
     requisition.status = RequisitionStatus.SUBMITTED;
     if (targetApproverUser) {
-      requisition.assignedApprover = targetApproverUser._id;
+      requisition.assignedApprover = targetApproverUser.id;
     }
 
     // Initialize approvals array if it doesn't exist
@@ -1128,7 +1395,7 @@ export const submitRequisition = async (
     if (targetApproverUser) {
       requisition.approvals.push({
         stage: "Department",
-        approver: targetApproverUser._id,
+        approver: targetApproverUser.id,
         status: "pending",
         timestamp: new Date(),
       });
@@ -1180,7 +1447,7 @@ export const departmentApproval = async (
       return;
     }
 
-    const user = await User.findById(req.user!._id).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(req.user!._id)), with: { department: true } });
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||
@@ -1404,7 +1671,7 @@ export const hhraApproval = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const user = await User.findById(req.user!._id).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(req.user!._id)), with: { department: true } });
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||
@@ -1561,18 +1828,18 @@ export const hhraApproval = async (
     });
 
     // Notify relevant parties about the approval/rejection/payment
-    // const requester = await User.findById(requisition.requester);
+    // const requester = await db.query.users.findFirst({ where: eq(users.id, String(requisition.requester)) });
     const department = await Department.findById(requisition.department);
     let departmentHead = null;
 
     if (department && department.head) {
-      departmentHead = await User.findById(department.head);
+      departmentHead = await db.query.users.findFirst({ where: eq(users.id, String(department.head)) });
     }
 
     const targetUserIds = [
       requisition.requester.toString(),
-      departmentHead && departmentHead._id
-        ? departmentHead._id.toString()
+      departmentHead && departmentHead.id
+        ? departmentHead.id.toString()
         : null,
     ].filter(Boolean) as string[];
 
@@ -2090,7 +2357,7 @@ export const cancelRequisition = async (
       requisition.requester.toString() !==
       (req.user as any)._id.toString().toString()
     ) {
-      const requester = await User.findById(requisition.requester);
+      const requester = await db.query.users.findFirst({ where: eq(users.id, String(requisition.requester)) });
       if (requester) {
         await emailService.sendRequisitionCancellationNotification(
           {
@@ -2770,7 +3037,7 @@ export const hrApproveItem = async (
     }
 
     // Verify user is HR approver
-    const user = await User.findById(userId).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)), with: { department: true } });
     const isHrHOD =
       user &&
       (user.role === UserRole.HR_APPROVER ||
@@ -2906,7 +3173,7 @@ export const hrRejectItem = async (
     }
 
     // Verify user is HR approver
-    const user = await User.findById(userId).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)), with: { department: true } });
     const isHrHOD =
       user &&
       (user.role === UserRole.HR_APPROVER ||
@@ -2996,7 +3263,7 @@ export const getItemsForProcurementReview = async (
     const userId = getUserId(req.user);
 
     // Verify user is PM
-    const user = await User.findById(userId);
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)) });
     if (!user || user.role !== UserRole.PROCUREMENT_MANAGER) {
       res.status(403).json({
         success: false,
@@ -3078,7 +3345,7 @@ export const moveToProcurementReview = async (
     const userId = getUserId(req.user);
 
     // Verify user is PM
-    const user = await User.findById(userId);
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)) });
     if (!user || user.role !== UserRole.PROCUREMENT_MANAGER) {
       res.status(403).json({
         success: false,
@@ -3148,7 +3415,7 @@ export const recordPayment = async (
     const userId = getUserId(req.user);
 
     // Verify user has permission (Finance or Admin)
-    const user = await User.findById(userId).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)), with: { department: true } });
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||
@@ -3249,7 +3516,7 @@ export const updatePaymentStatus = async (
     const userId = getUserId(req.user);
 
     // Verify user has permission
-    const user = await User.findById(userId).populate("department");
+    const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)), with: { department: true } });
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||

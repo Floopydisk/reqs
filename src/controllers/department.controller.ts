@@ -1,7 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import Department from "../models/department.model";
 import User from "../models/user.model";
+import Requisition from "../models/requisition.model";
+import PurchaseOrder from "../models/purchaseOrder.model";
 import { UserRole } from "../types/enums";
+import { db } from "../db";
+import { departments, users } from "../db/schema";
+import { eq, ilike } from "drizzle-orm";
+import mongoose from "mongoose";
 
 /**
  * @desc    Get all departments
@@ -14,35 +20,35 @@ export const getDepartments = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    // Add pagination support
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     const startIndex = (page - 1) * limit;
 
-    // Add search functionality
-    const searchQuery = req.query.search
-      ? { name: { $regex: req.query.search, $options: "i" } }
-      : {};
+    const searchQuery = req.query.search as string;
 
-    const total = await Department.countDocuments(searchQuery);
+    const allDepartments = await db.query.departments.findMany({
+      where: searchQuery ? ilike(departments.name, `%${searchQuery}%`) : undefined,
+      limit,
+      offset: startIndex,
+      with: { head: true, members: true }
+    });
 
-    const departments = await Department.find(searchQuery)
-      .populate("head", "firstName lastName email")
-      .populate("members", "firstName lastName email")
-      .skip(startIndex)
-      .limit(limit)
-      .sort({ name: 1 });
+    const total = await db.select({ id: departments.id }).from(departments).then(r => r.length);
 
     res.status(200).json({
       success: true,
-      count: departments.length,
+      count: allDepartments.length,
       pagination: {
         total,
         page,
         pages: Math.ceil(total / limit),
         limit,
       },
-      data: departments,
+      data: allDepartments.map(d => ({
+        _id: d.id,
+        ...d,
+        head: d.head ? { _id: d.head.id, ...d.head } : null,
+      })),
     });
   } catch (error) {
     next(error);
@@ -294,7 +300,6 @@ export const deleteDepartment = async (
     }
 
     // Check if department has any requisitions
-    const Requisition = require("../models/requisition.model").default;
     const requisitionsCount = await Requisition.countDocuments({
       department: department._id,
     });
@@ -596,8 +601,6 @@ export const getDepartmentStatistics = async (
       return;
     }
 
-    const Requisition = require("../models/requisition.model").default;
-
     // Get date range from query params or default to last 30 days
     const endDate = new Date();
     const startDate = req.query.startDate
@@ -652,8 +655,6 @@ export const getDepartmentStatistics = async (
     });
 
     // Get total spending
-    const PurchaseOrder = require("../models/purchaseOrder.model").default;
-
     const purchaseOrders = await PurchaseOrder.find({
       requisition: {
         $in: await Requisition.find({ department: department._id }).distinct(
@@ -664,8 +665,8 @@ export const getDepartmentStatistics = async (
       createdAt: { $gte: startDate, $lte: endDate },
     });
 
-    const totalSpending = purchaseOrders.reduce(
-      (sum: number, po: { totalPrice: number }) => sum + po.totalPrice,
+    const totalSpending: number = purchaseOrders.reduce(
+      (sum: number, po: any) => sum + (po.totalPrice || 0),
       0,
     );
 

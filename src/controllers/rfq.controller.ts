@@ -5,6 +5,9 @@ import RFQ from "../models/rfq.model";
 import Requisition from "../models/requisition.model";
 import User from "../models/user.model";
 import Vendor from "../models/vendor.model";
+import { db } from "../db";
+import { rfqs } from "../db/schema";
+import { eq, desc } from "drizzle-orm";
 import {
   RFQStatus,
   RequisitionStatus,
@@ -530,17 +533,54 @@ export const getRFQsByRequisition = async (
   try {
     const { requisitionId } = req.params;
 
-    const rfqs = await RFQ.find({ requisition: requisitionId })
-      .populate("createdBy", "firstName lastName email")
-      .populate("deliveryLocation", "name address")
-      .sort({ createdAt: -1 });
+    try {
+      const rfqs = await RFQ.find({ requisition: requisitionId })
+        .populate("createdBy", "firstName lastName email")
+        .populate("deliveryLocation", "name address")
+        .sort({ createdAt: -1 });
 
-    const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+      const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+
+      res.status(200).json({
+        success: true,
+        count: formattedRFQs.length,
+        data: formattedRFQs,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgRfqs = await db.query.rfqs.findMany({
+      where: eq(rfqs.requisitionId, String(requisitionId)),
+      orderBy: [desc(rfqs.createdAt)],
+    });
+
+    const data = pgRfqs.map((r) =>
+      formatRFQWithVendorIds({
+        _id: r.id,
+        rfqNumber: r.rfqNumber,
+        title: r.title,
+        requisition: r.requisitionId,
+        vendors: r.vendors,
+        vendor: r.vendorId,
+        relatedPos: r.relatedPos,
+        evaluationCriteria: r.evaluationCriteria,
+        termsAndConditions: r.termsAndConditions,
+        deliveryLocation: r.deliveryLocationId,
+        expectedDeliveryDate: r.expectedDeliveryDate,
+        status: r.status,
+        createdBy: r.createdById,
+        issuedAt: r.issuedAt,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      }),
+    );
 
     res.status(200).json({
       success: true,
-      count: formattedRFQs.length,
-      data: formattedRFQs,
+      count: data.length,
+      data,
     });
   } catch (error) {
     next(error);
@@ -558,64 +598,106 @@ export const getRFQById = async (
   try {
     const { rfqId } = req.params;
 
-    const rfq = await RFQ.findById(rfqId)
-      .populate("requisition", "requisitionNumber title department")
-      .populate("createdBy", "firstName lastName email")
-      .populate("deliveryLocation", "name address")
-      .populate("relatedPos", "title poNumber");
+    try {
+      const rfq = await RFQ.findById(rfqId)
+        .populate("requisition", "requisitionNumber title department")
+        .populate("createdBy", "firstName lastName email")
+        .populate("deliveryLocation", "name address")
+        .populate("relatedPos", "title poNumber");
 
-    if (rfq?.requisition) {
-      await (rfq.requisition as any).populate("department", "name");
+      if (rfq?.requisition) {
+        await (rfq.requisition as any).populate("department", "name");
+      }
+
+      if (rfq) {
+        const requisitionRelated = await Requisition.findById(rfq.requisition)
+          .populate("department", "name")
+          .populate("relatedRfqs", "title rfqNumber")
+          .select("title department relatedRfqs")
+          .lean();
+
+        const departmentName =
+          (requisitionRelated as any)?.department?.name || "N/A";
+
+        const relatedRequests = requisitionRelated
+          ? [
+              {
+                _id: (requisitionRelated as any)._id.toString(),
+                title: (requisitionRelated as any).title || "Request",
+                department: departmentName,
+              },
+            ]
+          : [];
+
+        const relatedRfqs = Array.isArray(requisitionRelated?.relatedRfqs)
+          ? requisitionRelated.relatedRfqs.map((item: any) => ({
+              _id: item._id?.toString?.() || item.toString(),
+              title: item.title || item.rfqNumber || "RFQ",
+              department: departmentName,
+            }))
+          : [];
+
+        const relatedPos = Array.isArray((rfq as any).relatedPos)
+          ? (rfq as any).relatedPos.map((item: any) => ({
+              _id: item._id?.toString?.() || item.toString(),
+              title: item.title || "",
+              department: departmentName,
+            }))
+          : [];
+
+        res.status(200).json({
+          success: true,
+          data: {
+            ...formatRFQWithVendorIds(rfq),
+            related: {
+              requests: relatedRequests,
+              rfqs: relatedRfqs,
+              pos: relatedPos,
+            },
+          },
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
     }
 
-    if (!rfq) {
+    const pgRfq = await db.query.rfqs.findFirst({
+      where: eq(rfqs.id, String(rfqId)),
+    });
+
+    if (!pgRfq) {
       res.status(404).json({ success: false, message: "RFQ not found" });
       return;
     }
 
-    const requisitionRelated = await Requisition.findById(rfq.requisition)
-      .populate("department", "name")
-      .populate("relatedRfqs", "title rfqNumber")
-      .select("title department relatedRfqs")
-      .lean();
-
-    const departmentName =
-      (requisitionRelated as any)?.department?.name || "N/A";
-
-    const relatedRequests = requisitionRelated
-      ? [
-          {
-            _id: (requisitionRelated as any)._id.toString(),
-            title: (requisitionRelated as any).title || "Request",
-            department: departmentName,
-          },
-        ]
-      : [];
-
-    const relatedRfqs = Array.isArray(requisitionRelated?.relatedRfqs)
-      ? requisitionRelated.relatedRfqs.map((item: any) => ({
-          _id: item._id?.toString?.() || item.toString(),
-          title: item.title || item.rfqNumber || "RFQ",
-          department: departmentName,
-        }))
-      : [];
-
-    const relatedPos = Array.isArray((rfq as any).relatedPos)
-        ? (rfq as any).relatedPos.map((item: any) => ({
-            _id: item._id?.toString?.() || item.toString(),
-            title: item.title || "",
-            department: departmentName,
-          }))
-      : [];
+    const formatted = formatRFQWithVendorIds({
+      _id: pgRfq.id,
+      rfqNumber: pgRfq.rfqNumber,
+      title: pgRfq.title,
+      requisition: pgRfq.requisitionId,
+      vendors: pgRfq.vendors,
+      vendor: pgRfq.vendorId,
+      relatedPos: pgRfq.relatedPos,
+      evaluationCriteria: pgRfq.evaluationCriteria,
+      termsAndConditions: pgRfq.termsAndConditions,
+      deliveryLocation: pgRfq.deliveryLocationId,
+      expectedDeliveryDate: pgRfq.expectedDeliveryDate,
+      status: pgRfq.status,
+      createdBy: pgRfq.createdById,
+      issuedAt: pgRfq.issuedAt,
+      createdAt: pgRfq.createdAt,
+      updatedAt: pgRfq.updatedAt,
+    });
 
     res.status(200).json({
       success: true,
       data: {
-        ...formatRFQWithVendorIds(rfq),
+        ...formatted,
         related: {
-          requests: relatedRequests,
-          rfqs: relatedRfqs,
-          pos: relatedPos,
+          requests: [],
+          rfqs: [],
+          pos: [],
         },
       },
     });
@@ -953,28 +1035,83 @@ export const getAllRFQs = async (
       query.requisition = req.query.requisition;
     }
 
-    const total = await RFQ.countDocuments(query);
-    const rfqs = await RFQ.find(query)
-      .skip(startIndex)
-      .limit(limit)
-      .populate({
-        path: "requisition",
-        select: "requisitionNumber title requester",
-        populate: { path: "requester", select: "firstName lastName email" },
-      })
-      .populate("createdBy", "firstName lastName email")
-      .populate("deliveryLocation", "name address contactPerson phoneNumber email")
-      .sort({ createdAt: -1 });
+    try {
+      const total = await RFQ.countDocuments(query);
+      const rfqs = await RFQ.find(query)
+        .skip(startIndex)
+        .limit(limit)
+        .populate({
+          path: "requisition",
+          select: "requisitionNumber title requester",
+          populate: { path: "requester", select: "firstName lastName email" },
+        })
+        .populate("createdBy", "firstName lastName email")
+        .populate(
+          "deliveryLocation",
+          "name address contactPerson phoneNumber email",
+        )
+        .sort({ createdAt: -1 });
 
-    const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+      const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+
+      res.status(200).json({
+        success: true,
+        count: formattedRFQs.length,
+        total,
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        data: formattedRFQs,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgRfqs = await db.query.rfqs.findMany({
+      orderBy: [desc(rfqs.createdAt)],
+    });
+
+    let filtered = pgRfqs;
+    if (req.query.status) {
+      filtered = filtered.filter((r) => r.status === req.query.status);
+    }
+    if (req.query.requisition) {
+      filtered = filtered.filter(
+        (r) => r.requisitionId === req.query.requisition,
+      );
+    }
+
+    const totalPg = filtered.length;
+    const paginated = filtered.slice(startIndex, startIndex + limit);
+
+    const data = paginated.map((r) =>
+      formatRFQWithVendorIds({
+        _id: r.id,
+        rfqNumber: r.rfqNumber,
+        title: r.title,
+        requisition: r.requisitionId,
+        vendors: r.vendors,
+        vendor: r.vendorId,
+        relatedPos: r.relatedPos,
+        evaluationCriteria: r.evaluationCriteria,
+        termsAndConditions: r.termsAndConditions,
+        deliveryLocation: r.deliveryLocationId,
+        expectedDeliveryDate: r.expectedDeliveryDate,
+        status: r.status,
+        createdBy: r.createdById,
+        issuedAt: r.issuedAt,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      }),
+    );
 
     res.status(200).json({
       success: true,
-      count: formattedRFQs.length,
-      total,
+      count: data.length,
+      total: totalPg,
       currentPage: page,
-      totalPages: Math.ceil(total / limit),
-      data: formattedRFQs,
+      totalPages: Math.ceil(totalPg / limit) || 1,
+      data,
     });
   } catch (error) {
     next(error);

@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 BYPASS="iGNOre"
 
 echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"

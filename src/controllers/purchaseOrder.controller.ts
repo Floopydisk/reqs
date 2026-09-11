@@ -4,6 +4,9 @@ import RFQ from "../models/rfq.model";
 import Requisition from "../models/requisition.model";
 import Location from "../models/location.model";
 import User from "../models/user.model";
+import { db } from "../db";
+import { purchaseOrders } from "../db/schema";
+import { eq, desc } from "drizzle-orm";
 import {
   PurchaseOrderStatus,
   RequisitionStatus,
@@ -116,54 +119,112 @@ export const getPurchaseOrders = async (
       }
     }
 
-    const purchaseOrders = await PurchaseOrder.find(query)
-      .populate("requisition", "requisitionNumber title category")
-      .populate("rfq", "rfqNumber")
-      .populate("vendor", "name contactPerson email phone address")
-      .populate(
-        "deliveryLocation",
-        "name address contactPerson phoneNumber email",
-      )
-      .populate("deliveryContact", "firstName lastName email")
-      .populate("createdBy", "firstName lastName email")
-      .populate("approvals.approver", "firstName lastName email role")
-      .sort({ createdAt: -1 });
+    let formattedPOs: any[] = [];
+    try {
+      const purchaseOrdersList = await PurchaseOrder.find(query)
+        .populate("requisition", "requisitionNumber title category")
+        .populate("rfq", "rfqNumber")
+        .populate("vendor", "name contactPerson email phone address")
+        .populate(
+          "deliveryLocation",
+          "name address contactPerson phoneNumber email",
+        )
+        .populate("deliveryContact", "firstName lastName email")
+        .populate("createdBy", "firstName lastName email")
+        .populate("approvals.approver", "firstName lastName email role")
+        .sort({ createdAt: -1 });
 
-    // Compute discovery fields for each PO (Requirement I1)
-    const formattedPOs = purchaseOrders.map((po: any) => {
-      const title =
-        po.title ||
-        (po.requisition && po.requisition.title) ||
-        "Purchase Order";
-      const plain = po.toObject ? po.toObject() : { ...po };
-      plain.title = title;
+      // Compute discovery fields for each PO (Requirement I1)
+      formattedPOs = purchaseOrdersList.map((po: any) => {
+        const title =
+          po.title ||
+          (po.requisition && po.requisition.title) ||
+          "Purchase Order";
+        const plain = po.toObject ? po.toObject() : { ...po };
+        plain.title = title;
 
+        const isApproved = po.status === PurchaseOrderStatus.APPROVED;
+        const isService =
+          po.serviceClassificationOverride === "service" ||
+          (po.items &&
+            po.items.length > 0 &&
+            po.items.every(
+              (i: any) =>
+                i.lineType === "service_charge" ||
+                i.lineType === "service" ||
+                Number(i.quantity) === 0,
+            )) ||
+          (po.requisition as any)?.category === "service";
+
+        plain.canCreateGrn =
+          isApproved &&
+          !isService &&
+          po.status !== PurchaseOrderStatus.COMPLETED &&
+          po.status !== PurchaseOrderStatus.CANCELLED;
+
+        plain.canCreateJcf =
+          isApproved &&
+          isService &&
+          po.status !== PurchaseOrderStatus.COMPLETED &&
+          po.status !== PurchaseOrderStatus.CANCELLED;
+
+        return plain;
+      });
+
+      res.status(200).json({
+        success: true,
+        count: formattedPOs.length,
+        data: formattedPOs,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgPOs = await db.query.purchaseOrders.findMany({
+      orderBy: [desc(purchaseOrders.createdAt)],
+    });
+
+    formattedPOs = pgPOs.map((po: any) => {
       const isApproved = po.status === PurchaseOrderStatus.APPROVED;
       const isService =
         po.serviceClassificationOverride === "service" ||
-        (po.items &&
+        (Array.isArray(po.items) &&
           po.items.length > 0 &&
           po.items.every(
             (i: any) =>
               i.lineType === "service_charge" ||
               i.lineType === "service" ||
               Number(i.quantity) === 0,
-          )) ||
-        (po.requisition as any)?.category === "service";
+          ));
 
-      plain.canCreateGrn =
-        isApproved &&
-        !isService &&
-        po.status !== PurchaseOrderStatus.COMPLETED &&
-        po.status !== PurchaseOrderStatus.CANCELLED;
-
-      plain.canCreateJcf =
-        isApproved &&
-        isService &&
-        po.status !== PurchaseOrderStatus.COMPLETED &&
-        po.status !== PurchaseOrderStatus.CANCELLED;
-
-      return plain;
+      return {
+        _id: po.id,
+        poNumber: po.poNumber,
+        title: po.title || "Purchase Order",
+        requisition: po.requisitionId,
+        rfq: po.rfqId,
+        vendor: po.vendorId,
+        items: po.items,
+        totalAmount: po.totalAmount,
+        deliveryLocation: po.deliveryLocationId,
+        deliveryDate: po.deliveryDate,
+        deliveryContact: po.deliveryContactId,
+        approvals: po.approvals,
+        status: po.status,
+        canCreateGrn:
+          isApproved &&
+          !isService &&
+          po.status !== PurchaseOrderStatus.COMPLETED &&
+          po.status !== PurchaseOrderStatus.CANCELLED,
+        canCreateJcf:
+          isApproved &&
+          isService &&
+          po.status !== PurchaseOrderStatus.COMPLETED &&
+          po.status !== PurchaseOrderStatus.CANCELLED,
+        createdAt: po.createdAt,
+        updatedAt: po.updatedAt,
+      };
     });
 
     res.status(200).json({
@@ -182,23 +243,53 @@ export const getPurchaseOrder = async (
 ): Promise<void> => {
   try {
     const id = String(req.params.id || "").trim();
-    const purchaseOrder = await PurchaseOrder.findById(id)
-      .populate("requisition")
-      .populate("rfq", "rfqNumber")
-      .populate("vendor", "name contactPerson email phone address")
-      .populate(
-        "deliveryLocation",
-        "name address contactPerson phoneNumber email",
-      )
-      .populate("deliveryContact", "firstName lastName email")
-      .populate("createdBy", "firstName lastName email")
-      .populate("approvals.approver", "firstName lastName email role");
+    let purchaseOrder: any = null;
+    try {
+      purchaseOrder = await PurchaseOrder.findById(id)
+        .populate("requisition")
+        .populate("rfq", "rfqNumber")
+        .populate("vendor", "name contactPerson email phone address")
+        .populate(
+          "deliveryLocation",
+          "name address contactPerson phoneNumber email",
+        )
+        .populate("deliveryContact", "firstName lastName email")
+        .populate("createdBy", "firstName lastName email")
+        .populate("approvals.approver", "firstName lastName email role");
+    } catch (e) {
+      // Fallback
+    }
 
     if (!purchaseOrder) {
-      res
-        .status(404)
-        .json({ success: false, message: "Purchase order not found" });
-      return;
+      const pgPO = await db.query.purchaseOrders.findFirst({
+        where: eq(purchaseOrders.id, id),
+      });
+
+      if (!pgPO) {
+        res
+          .status(404)
+          .json({ success: false, message: "Purchase order not found" });
+        return;
+      }
+
+      purchaseOrder = {
+        _id: pgPO.id,
+        poNumber: pgPO.poNumber,
+        title: pgPO.title || "Purchase Order",
+        requisition: pgPO.requisitionId,
+        rfq: pgPO.rfqId,
+        vendor: pgPO.vendorId,
+        items: pgPO.items,
+        totalAmount: pgPO.totalAmount,
+        deliveryLocation: pgPO.deliveryLocationId,
+        deliveryDate: pgPO.deliveryDate,
+        deliveryContact: pgPO.deliveryContactId,
+        approvals: pgPO.approvals,
+        status: pgPO.status,
+        serviceClassificationOverride: pgPO.serviceClassificationOverride,
+        createdAt: pgPO.createdAt,
+        updatedAt: pgPO.updatedAt,
+      };
     }
 
     const requisitionDoc = await Requisition.findById(purchaseOrder.requisition)

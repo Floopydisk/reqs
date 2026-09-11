@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { ILocation } from "../types/interfaces";
+import { syncLocationToPostgres } from "../utils/pgSync";
 
 const locationSchema = new Schema<ILocation>(
   {
@@ -30,5 +31,25 @@ const locationSchema = new Schema<ILocation>(
   },
   { timestamps: true }
 );
+
+locationSchema.post("save", async function (doc, next) {
+  try {
+    await syncLocationToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (location save):", err);
+  }
+  next();
+});
+
+locationSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncLocationToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (location findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<ILocation>("Location", locationSchema);

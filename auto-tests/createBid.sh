@@ -6,7 +6,7 @@ TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4ZWUyMTZlMmRmZDg4Mjk4ZDVk
 
 echo "Creating bid for requisition $REQUISITION_ID"
 curl -X POST \
-  "http://localhost:3003/api/requisitions/$REQUISITION_ID/bids" \
+  "http://localhost:3000/api/requisitions/$REQUISITION_ID/bids" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
@@ -29,6 +29,6 @@ curl -X POST \
 # After creating the bid, check the bids endpoint again
 echo -e "\n\nChecking bids after creation:"
 curl -X GET \
-  "http://localhost:3003/api/bids?page=1&limit=10" \
+  "http://localhost:3000/api/bids?page=1&limit=10" \
   -H "accept: application/json" \
   -H "Authorization: Bearer $TOKEN"

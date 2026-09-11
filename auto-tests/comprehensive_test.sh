@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║   API VERIFICATION REPORT - COMPREHENSIVE TEST             ║"
@@ -13,11 +13,11 @@ echo "1. SERVER STATUS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "Health Check:"
-curl -s http://localhost:3003/health
+curl -s http://localhost:3000/health
 echo ""
 echo ""
 echo "Root Endpoint:"
-curl -s http://localhost:3003/
+curl -s http://localhost:3000/
 echo ""
 echo ""
 
@@ -55,7 +55,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "3. TEST SUMMARY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "✓ API Server is running on localhost:3003"
+echo "✓ API Server is running on localhost:3000"
 echo "✓ Health check endpoint working"
 echo "✓ Root endpoint responding"
 echo "⚠ Authentication endpoint reached but returning 503"

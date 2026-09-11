@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 
 echo "Testing authentication..."
 echo ""

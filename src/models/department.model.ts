@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { IDepartment } from '../types/interfaces';
+import { syncDepartmentToPostgres } from '../utils/pgSync';
 
 const departmentSchema = new Schema<IDepartment>(
   {
@@ -33,5 +34,25 @@ const departmentSchema = new Schema<IDepartment>(
     timestamps: true
   }
 );
+
+departmentSchema.post("save", async function (doc, next) {
+  try {
+    await syncDepartmentToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (department save):", err);
+  }
+  next();
+});
+
+departmentSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncDepartmentToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (department findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<IDepartment>('Department', departmentSchema);

@@ -388,7 +388,6 @@ export async function notifyAll(
  */
 export async function sendDeliveryReminders(deliveryId: string): Promise<void> {
   try {
-    const mongoose = require("mongoose");
     const Delivery = mongoose.model("Delivery");
     const PurchaseOrder = mongoose.model("PurchaseOrder");
     const Requisition = mongoose.model("Requisition");
@@ -489,7 +488,6 @@ export async function sendLateDeliveryAlerts(
   deliveryId: string
 ): Promise<void> {
   try {
-    const mongoose = require("mongoose");
     const Delivery = mongoose.model("Delivery");
     const PurchaseOrder = mongoose.model("PurchaseOrder");
     const Requisition = mongoose.model("Requisition");
@@ -586,7 +584,6 @@ export async function sendPaymentStatusNotification(
   actorId: string
 ): Promise<void> {
   try {
-    const mongoose = require("mongoose");
     const PurchaseOrder = mongoose.model("PurchaseOrder");
     const Requisition = mongoose.model("Requisition");
     const User = mongoose.model("User");

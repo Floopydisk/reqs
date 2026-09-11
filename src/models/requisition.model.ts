@@ -1,3 +1,4 @@
+import { syncRequisitionToPostgres } from "../utils/pgSync";
 import mongoose, { Schema } from "mongoose";
 import { IRequisition } from "../types/interfaces";
 import {
@@ -155,6 +156,32 @@ requisitionSchema.pre("validate", async function (this: IRequisition, next) {
     this.requisitionNumber = `REQ-${year}${month}-${(count + 1)
       .toString()
       .padStart(4, "0")}`;
+  }
+  next();
+});
+
+
+
+
+
+// Sync to Postgres on save
+requisitionSchema.post("save", async function (doc, next) {
+  try {
+    await syncRequisitionToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (save):", err);
+  }
+  next();
+});
+
+// Sync to Postgres on findOneAndUpdate
+requisitionSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncRequisitionToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (findOneAndUpdate):", err);
+    }
   }
   next();
 });

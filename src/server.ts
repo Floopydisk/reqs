@@ -3,7 +3,7 @@ import http from "http";
 import { initWebsocket } from "./utils/websocket";
 import { initQueue } from "./utils/queue";
 
-const PORT = parseInt(process.env.PORT || "3000", 10);
+const PORT = 3000;
 const server = http.createServer(app);
 
 // Function to start the server

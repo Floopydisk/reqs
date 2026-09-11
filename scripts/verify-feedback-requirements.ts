@@ -9,6 +9,7 @@ import VendorCategory from "../src/models/vendorCategory.model";
 import Location from "../src/models/location.model";
 import User from "../src/models/user.model";
 import RFQ from "../src/models/rfq.model";
+import { mapDesignationToRoleEnhanced } from "../src/config/roleMapping";
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -129,7 +130,6 @@ async function runTests() {
 
   // 4. Role Mapping Verification
   console.log("\n--- Section D: Role Mapping ---");
-  const { mapDesignationToRoleEnhanced } = require("../src/config/roleMapping");
   assert(mapDesignationToRoleEnhanced("Procurement Manager", "101") === UserRole.PROCUREMENT_MANAGER, "Role mapping maps 'Procurement Manager' correctly");
   assert(mapDesignationToRoleEnhanced("System Administrator", "102") === UserRole.ADMIN, "Role mapping maps 'System Administrator' correctly");
   assert(mapDesignationToRoleEnhanced("Regular Employee", "103") === UserRole.STAFF, "Role mapping maps 'Regular Employee' correctly");

@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document } from "mongoose";
 import { JCFStatus } from "../types/enums";
 import { generateSequentialId } from "../utils/idGenerator";
+import { syncJcfToPostgres } from "../utils/pgSync";
 
 export interface IJCFApproval {
   approver: mongoose.Types.ObjectId;
@@ -153,6 +154,26 @@ jcfSchema.pre("save", async function (next) {
 jcfSchema.index({ purchaseOrder: 1 });
 jcfSchema.index({ status: 1 });
 jcfSchema.index({ requisition: 1 });
+
+jcfSchema.post("save", async function (doc, next) {
+  try {
+    await syncJcfToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (JCF save):", err);
+  }
+  next();
+});
+
+jcfSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncJcfToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (JCF findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 const JCF = mongoose.model<IJCF>("JCF", jcfSchema);
 

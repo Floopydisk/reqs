@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 
 echo "=========================================="
 echo "FETCHING AUTHENTICATION TOKENS"

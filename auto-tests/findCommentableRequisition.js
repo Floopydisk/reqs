@@ -2,7 +2,7 @@ const axios = require('axios');
 require('dotenv').config();
 
 // Define base URL for API
-const baseURL = 'http://localhost:3003/api';
+const baseURL = 'http://localhost:3000/api';
 
 // Get token from the command line or set default
 const token = process.argv[2] || '';

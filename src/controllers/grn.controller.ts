@@ -6,6 +6,9 @@ import PurchaseOrder from "../models/purchaseOrder.model";
 import Requisition from "../models/requisition.model";
 import User from "../models/user.model";
 import RFQ from "../models/rfq.model";
+import { db } from "../db";
+import { grns } from "../db/schema";
+import { eq } from "drizzle-orm";
 import {
   GRNStatus,
   PurchaseOrderStatus,
@@ -265,16 +268,47 @@ export const getGRNsByPO = async (
   try {
     const { poId } = req.params;
 
-    const grns = await GRN.find({ purchaseOrder: poId })
-      .populate("createdBy", "firstName lastName email")
-      .populate("receiver", "firstName lastName email")
-      .populate("approvals.approver", "firstName lastName email")
-      .sort({ createdAt: -1 });
+    try {
+      const grnList = await GRN.find({ purchaseOrder: poId })
+        .populate("createdBy", "firstName lastName email")
+        .populate("receiver", "firstName lastName email")
+        .populate("approvals.approver", "firstName lastName email")
+        .sort({ createdAt: -1 });
+
+      res.status(200).json({
+        success: true,
+        count: grnList.length,
+        data: grnList,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgGrns = await db.query.grns.findMany({
+      where: eq(grns.purchaseOrderId, String(poId)),
+    });
+
+    const data = pgGrns.map((g) => ({
+      _id: g.id,
+      grnNumber: g.grnNumber,
+      purchaseOrder: g.purchaseOrderId,
+      requisition: g.requisitionId,
+      items: g.items,
+      generalRemarks: g.generalRemarks,
+      createdBy: g.createdById,
+      receiver: g.receiverId,
+      approvals: g.approvals,
+      status: g.status,
+      deliveredAt: g.deliveredAt,
+      createdAt: g.createdAt,
+      updatedAt: g.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      count: grns.length,
-      data: grns,
+      count: data.length,
+      data,
     });
   } catch (error) {
     next(error);
@@ -292,21 +326,51 @@ export const getGRNById = async (
   try {
     const { grnId } = req.params;
 
-    const grn = await GRN.findById(grnId)
-      .populate("purchaseOrder")
-      .populate("requisition", "requisitionNumber title")
-      .populate("createdBy", "firstName lastName email")
-      .populate("receiver", "firstName lastName email")
-      .populate("approvals.approver", "firstName lastName email");
+    try {
+      const grn = await GRN.findById(grnId)
+        .populate("purchaseOrder")
+        .populate("requisition", "requisitionNumber title")
+        .populate("createdBy", "firstName lastName email")
+        .populate("receiver", "firstName lastName email")
+        .populate("approvals.approver", "firstName lastName email");
 
-    if (!grn) {
+      if (grn) {
+        res.status(200).json({
+          success: true,
+          data: grn,
+        });
+        return;
+      }
+    } catch (error) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgGrn = await db.query.grns.findFirst({
+      where: eq(grns.id, String(grnId)),
+    });
+
+    if (!pgGrn) {
       res.status(404).json({ success: false, message: "GRN not found" });
       return;
     }
 
     res.status(200).json({
       success: true,
-      data: grn,
+      data: {
+        _id: pgGrn.id,
+        grnNumber: pgGrn.grnNumber,
+        purchaseOrder: pgGrn.purchaseOrderId,
+        requisition: pgGrn.requisitionId,
+        items: pgGrn.items,
+        generalRemarks: pgGrn.generalRemarks,
+        createdBy: pgGrn.createdById,
+        receiver: pgGrn.receiverId,
+        approvals: pgGrn.approvals,
+        status: pgGrn.status,
+        deliveredAt: pgGrn.deliveredAt,
+        createdAt: pgGrn.createdAt,
+        updatedAt: pgGrn.updatedAt,
+      },
     });
   } catch (error) {
     next(error);

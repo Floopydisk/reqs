@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 import { GRNStatus } from "../types/enums";
+import { syncGrnToPostgres } from "../utils/pgSync";
 
 export interface IGRNItem {
   itemId: mongoose.Types.ObjectId; // Reference to item in PO
@@ -197,6 +198,26 @@ grnSchema.pre("save", async function (next) {
 grnSchema.index({ purchaseOrder: 1 });
 grnSchema.index({ status: 1 });
 grnSchema.index({ requisition: 1 });
+
+grnSchema.post("save", async function (doc, next) {
+  try {
+    await syncGrnToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (GRN save):", err);
+  }
+  next();
+});
+
+grnSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncGrnToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (GRN findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 const GRN = mongoose.model<IGRN>("GRN", grnSchema);
 

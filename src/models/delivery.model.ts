@@ -4,6 +4,7 @@ import {
   IInventoryConfirmation,
   IDepartmentConfirmation,
 } from "../types/deliveryExtensions";
+import { syncDeliveryToPostgres } from "../utils/pgSync";
 
 export interface IDeliveryItem {
   _id: any;
@@ -312,6 +313,26 @@ DeliverySchema.pre("save", async function (next) {
   } catch (error) {
     next(error as Error);
   }
+});
+
+DeliverySchema.post("save", async function (doc, next) {
+  try {
+    await syncDeliveryToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (delivery save):", err);
+  }
+  next();
+});
+
+DeliverySchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncDeliveryToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (delivery findOneAndUpdate):", err);
+    }
+  }
+  next();
 });
 
 export default mongoose.model<IDelivery>("Delivery", DeliverySchema);

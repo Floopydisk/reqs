@@ -2,6 +2,7 @@ import mongoose, { Schema } from "mongoose";
 import { IUser } from "../types/interfaces";
 import { UserRole } from "../types/enums";
 import bcrypt from "bcryptjs";
+import { syncUserToPostgres } from "../utils/pgSync";
 
 const userSchema = new Schema<IUser>(
   {
@@ -104,5 +105,25 @@ userSchema.index({ employeeId: 1 }, { unique: true });
 userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ department: 1 });
 userSchema.index({ role: 1 });
+
+userSchema.post("save", async function (doc, next) {
+  try {
+    await syncUserToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (user save):", err);
+  }
+  next();
+});
+
+userSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncUserToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (user findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<IUser>("User", userSchema);

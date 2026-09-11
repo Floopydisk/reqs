@@ -1,5 +1,6 @@
-import { NotificationPayload, NotificationType } from "../utils/notification";
+import { NotificationType } from "../utils/notification";
 import mongoose, { Schema, Document } from "mongoose";
+import { syncNotificationToPostgres } from "../utils/pgSync";
 
 export interface INotification extends Document {
   type: NotificationType;
@@ -96,6 +97,26 @@ const NotificationSchema: Schema = new Schema(
 
 // Indexing for faster queries
 NotificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+
+NotificationSchema.post("save", async function (doc, next) {
+  try {
+    await syncNotificationToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (notification save):", err);
+  }
+  next();
+});
+
+NotificationSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncNotificationToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (notification findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 const Notification = mongoose.model<INotification>(
   "Notification",

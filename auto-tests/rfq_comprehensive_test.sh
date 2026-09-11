@@ -2,7 +2,7 @@
 
 source tokens.txt
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 
 # Colors
 GREEN='\033[0;32m'

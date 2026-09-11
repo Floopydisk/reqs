@@ -7,6 +7,9 @@ import JCF, { IJCF } from "../models/jcf.model";
 import PurchaseOrder from "../models/purchaseOrder.model";
 import Requisition from "../models/requisition.model";
 import User from "../models/user.model";
+import { db } from "../db";
+import { jcfs } from "../db/schema";
+import { eq, desc } from "drizzle-orm";
 import {
   JCFStatus,
   PurchaseOrderStatus,
@@ -163,27 +166,75 @@ export const getJCFs = async (
       query.$or = [{ approver: req.user._id }, { createdBy: req.user._id }];
     }
 
-    const total = await JCF.countDocuments(query);
-    const jcfs = await JCF.find(query)
-      .populate("purchaseOrder", "poNumber totalAmount")
-      .populate("requisition", "requisitionNumber title")
-      .populate("vendor", "name contactPerson email phone")
-      .populate("createdBy", "firstName lastName email")
-      .populate("approver", "firstName lastName email")
-      .sort({ createdAt: -1 })
-      .skip(startIndex)
-      .limit(limit);
+    try {
+      const total = await JCF.countDocuments(query);
+      const jcfsList = await JCF.find(query)
+        .populate("purchaseOrder", "poNumber totalAmount")
+        .populate("requisition", "requisitionNumber title")
+        .populate("vendor", "name contactPerson email phone")
+        .populate("createdBy", "firstName lastName email")
+        .populate("approver", "firstName lastName email")
+        .sort({ createdAt: -1 })
+        .skip(startIndex)
+        .limit(limit);
+
+      res.status(200).json({
+        success: true,
+        count: jcfsList.length,
+        pagination: {
+          total,
+          page,
+          pages: Math.ceil(total / limit),
+          limit,
+        },
+        data: jcfsList,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgJcfs = await db.query.jcfs.findMany({
+      orderBy: [desc(jcfs.createdAt)],
+    });
+
+    let filtered = pgJcfs;
+    if (req.query.status) {
+      filtered = filtered.filter((j) => j.status === req.query.status);
+    }
+    const totalPg = filtered.length;
+    const paginated = filtered.slice(startIndex, startIndex + limit);
+
+    const data = paginated.map((j) => ({
+      _id: j.id,
+      jcfNumber: j.jcfNumber,
+      purchaseOrder: j.purchaseOrderId,
+      requisition: j.requisitionId,
+      vendor: j.vendorId,
+      createdBy: j.createdById,
+      approver: j.approverId,
+      serviceDescription: j.serviceDescription,
+      completionEvidence: j.completionEvidence,
+      rating: j.rating,
+      status: j.status,
+      approval: j.approval,
+      attachments: j.attachments,
+      pdfUrl: j.pdfUrl,
+      completedAt: j.completedAt,
+      createdAt: j.createdAt,
+      updatedAt: j.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      count: jcfs.length,
+      count: data.length,
       pagination: {
-        total,
+        total: totalPg,
         page,
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(totalPg / limit) || 1,
         limit,
       },
-      data: jcfs,
+      data,
     });
   } catch (error) {
     next(error);
@@ -199,21 +250,56 @@ export const getJCFById = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const jcf = await JCF.findById(req.params.id)
-      .populate("purchaseOrder", "poNumber totalAmount items generalTerms deliveryDate")
-      .populate("requisition", "requisitionNumber title department")
-      .populate("vendor", "name contactPerson email phone address")
-      .populate("createdBy", "firstName lastName email role")
-      .populate("approver", "firstName lastName email role");
+    const id = String(req.params.id);
+    try {
+      const jcf = await JCF.findById(id)
+        .populate("purchaseOrder", "poNumber totalAmount items generalTerms deliveryDate")
+        .populate("requisition", "requisitionNumber title department")
+        .populate("vendor", "name contactPerson email phone address")
+        .populate("createdBy", "firstName lastName email role")
+        .populate("approver", "firstName lastName email role");
 
-    if (!jcf) {
+      if (jcf) {
+        res.status(200).json({
+          success: true,
+          data: jcf,
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgJcf = await db.query.jcfs.findFirst({
+      where: eq(jcfs.id, id),
+    });
+
+    if (!pgJcf) {
       res.status(404).json({ success: false, message: "Job Completion Form not found" });
       return;
     }
 
     res.status(200).json({
       success: true,
-      data: jcf,
+      data: {
+        _id: pgJcf.id,
+        jcfNumber: pgJcf.jcfNumber,
+        purchaseOrder: pgJcf.purchaseOrderId,
+        requisition: pgJcf.requisitionId,
+        vendor: pgJcf.vendorId,
+        createdBy: pgJcf.createdById,
+        approver: pgJcf.approverId,
+        serviceDescription: pgJcf.serviceDescription,
+        completionEvidence: pgJcf.completionEvidence,
+        rating: pgJcf.rating,
+        status: pgJcf.status,
+        approval: pgJcf.approval,
+        attachments: pgJcf.attachments,
+        pdfUrl: pgJcf.pdfUrl,
+        completedAt: pgJcf.completedAt,
+        createdAt: pgJcf.createdAt,
+        updatedAt: pgJcf.updatedAt,
+      },
     });
   } catch (error) {
     next(error);
@@ -229,21 +315,56 @@ export const getJCFByPO = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const jcf = await JCF.findOne({ purchaseOrder: req.params.poId })
-      .populate("purchaseOrder", "poNumber totalAmount items")
-      .populate("requisition", "requisitionNumber title")
-      .populate("vendor", "name contactPerson email")
-      .populate("createdBy", "firstName lastName email")
-      .populate("approver", "firstName lastName email");
+    const poId = String(req.params.poId);
+    try {
+      const jcf = await JCF.findOne({ purchaseOrder: poId })
+        .populate("purchaseOrder", "poNumber totalAmount items")
+        .populate("requisition", "requisitionNumber title")
+        .populate("vendor", "name contactPerson email")
+        .populate("createdBy", "firstName lastName email")
+        .populate("approver", "firstName lastName email");
 
-    if (!jcf) {
+      if (jcf) {
+        res.status(200).json({
+          success: true,
+          data: jcf,
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgJcf = await db.query.jcfs.findFirst({
+      where: eq(jcfs.purchaseOrderId, poId),
+    });
+
+    if (!pgJcf) {
       res.status(404).json({ success: false, message: "No Job Completion Form found for this purchase order" });
       return;
     }
 
     res.status(200).json({
       success: true,
-      data: jcf,
+      data: {
+        _id: pgJcf.id,
+        jcfNumber: pgJcf.jcfNumber,
+        purchaseOrder: pgJcf.purchaseOrderId,
+        requisition: pgJcf.requisitionId,
+        vendor: pgJcf.vendorId,
+        createdBy: pgJcf.createdById,
+        approver: pgJcf.approverId,
+        serviceDescription: pgJcf.serviceDescription,
+        completionEvidence: pgJcf.completionEvidence,
+        rating: pgJcf.rating,
+        status: pgJcf.status,
+        approval: pgJcf.approval,
+        attachments: pgJcf.attachments,
+        pdfUrl: pgJcf.pdfUrl,
+        completedAt: pgJcf.completedAt,
+        createdAt: pgJcf.createdAt,
+        updatedAt: pgJcf.updatedAt,
+      },
     });
   } catch (error) {
     next(error);

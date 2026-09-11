@@ -4,7 +4,7 @@ import { IUser } from "../types/interfaces";
 
 // Generate JWT token
 export const generateToken = (user: IUser): string => {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET as string, {
+  return jwt.sign({ id: user.id || user._id }, process.env.JWT_SECRET as string, {
     expiresIn: process.env.JWT_EXPIRE
       ? parseInt(process.env.JWT_EXPIRE)
       : "12hrs",
@@ -37,7 +37,7 @@ export const sendTokenResponse = (
       success: true,
       token,
       user: {
-        id: user._id,
+        id: user.id || user._id,
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,

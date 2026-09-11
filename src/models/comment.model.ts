@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema } from "mongoose";
+import { syncCommentToPostgres } from "../utils/pgSync";
 
 export interface CommentDocument extends Document {
   text: string;
@@ -63,5 +64,25 @@ CommentSchema.index({ parentComment: 1 });
 CommentSchema.index({ requisition: 1, createdAt: -1 });
 CommentSchema.index({ bid: 1, createdAt: -1 });
 CommentSchema.index({ author: 1, createdAt: -1 });
+
+CommentSchema.post("save", async function (doc, next) {
+  try {
+    await syncCommentToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (comment save):", err);
+  }
+  next();
+});
+
+CommentSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncCommentToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (comment findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<CommentDocument>("Comment", CommentSchema);

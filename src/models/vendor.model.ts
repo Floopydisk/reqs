@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { IVendor } from "../types/interfaces";
+import { syncVendorToPostgres } from "../utils/pgSync";
 
 const vendorSchema = new Schema<IVendor>(
   {
@@ -39,7 +40,7 @@ const vendorSchema = new Schema<IVendor>(
       type: String,
       trim: true,
       match: [
-        /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/,
+        /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([/\w .-]*)*\/?$/,
         "Please use a valid URL",
       ],
     },
@@ -104,5 +105,25 @@ const vendorSchema = new Schema<IVendor>(
     timestamps: true,
   }
 );
+
+vendorSchema.post("save", async function (doc, next) {
+  try {
+    await syncVendorToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (vendor save):", err);
+  }
+  next();
+});
+
+vendorSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncVendorToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (vendor findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<IVendor>("Vendor", vendorSchema);

@@ -1,6 +1,7 @@
 import mongoose, { Document, Schema } from "mongoose";
 import { PurchaseOrderStatus } from "../types/enums";
 import { generateSequentialId } from "../utils/idGenerator";
+import { syncPurchaseOrderToPostgres } from "../utils/pgSync";
 
 export interface PurchaseOrderItem {
   itemId?: mongoose.Types.ObjectId; // Reference to item in requisition
@@ -388,6 +389,26 @@ PurchaseOrderSchema.index({ requisition: 1 });
 PurchaseOrderSchema.index({ rfq: 1 });
 PurchaseOrderSchema.index({ status: 1 });
 PurchaseOrderSchema.index({ createdAt: 1 });
+
+PurchaseOrderSchema.post("save", async function (doc, next) {
+  try {
+    await syncPurchaseOrderToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (PO save):", err);
+  }
+  next();
+});
+
+PurchaseOrderSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncPurchaseOrderToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (PO findOneAndUpdate):", err);
+    }
+  }
+  next();
+});
 
 export default mongoose.model<IPurchaseOrder>(
   "PurchaseOrder",

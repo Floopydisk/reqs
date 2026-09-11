@@ -1,8 +1,11 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
-import User from "../models/user.model";
+import { db } from "../db";
+import { users } from "../db/schema";
+import { eq } from "drizzle-orm";
 
 // Extend Request interface to include user
+/* eslint-disable @typescript-eslint/no-namespace */
 declare global {
   namespace Express {
     interface Request {
@@ -10,6 +13,7 @@ declare global {
     }
   }
 }
+/* eslint-enable @typescript-eslint/no-namespace */
 
 interface JwtPayload {
   id: string; // Changed from userId to id to match token generation
@@ -54,9 +58,10 @@ export const protect = async (
         id: string;
       };
       // Get user from token
-      const user = await User.findById(decoded.id)
-        .populate("department", "_id name code") // Include _id in population
-        .select("-password");
+      const user = await db.query.users.findFirst({
+        where: eq(users.id, decoded.id),
+        with: { department: true }
+      });
 
       if (!user) {
         res.status(401).json({
@@ -74,7 +79,11 @@ export const protect = async (
         return;
       }
 
-      req.user = user;
+      req.user = {
+        _id: user.id,
+        ...user,
+        department: user.department ? { _id: user.department.id, ...user.department } : null
+      };
       next();
     } catch (error) {
       res.status(401).json({

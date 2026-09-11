@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 BYPASS="iGNOre"
 
 echo "=========================================="
@@ -21,14 +21,14 @@ echo ""
 # Test 2: Check server health
 echo "2. Testing Server Health"
 echo "─────────────────────────────────"
-curl -X GET "http://localhost:3003/health"
+curl -X GET "http://localhost:3000/health"
 echo ""
 echo ""
 
 # Test 3: Check API docs
 echo "3. Testing API Documentation Endpoint"
 echo "─────────────────────────────────"
-curl -s -X GET "http://localhost:3003/api-docs" | head -c 200
+curl -s -X GET "http://localhost:3000/api-docs" | head -c 200
 echo "..."
 echo ""
 

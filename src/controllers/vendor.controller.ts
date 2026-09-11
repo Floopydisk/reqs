@@ -1,10 +1,14 @@
 import { Request, Response, NextFunction } from "express";
+import mongoose from "mongoose";
 import Vendor from "../models/vendor.model";
 import RFQ from "../models/rfq.model";
 import PurchaseOrder from "../models/purchaseOrder.model";
 import Delivery from "../models/delivery.model";
 import { deleteFileByUrl, uploadToS3 } from "../utils/fileUpload";
 import { UserRole } from "../types/enums";
+import { db } from "../db";
+import { vendors } from "../db/schema";
+import { eq } from "drizzle-orm";
 
 // @desc    Get all vendors
 // @route   GET /api/vendors
@@ -48,29 +52,77 @@ export const getVendors = async (
       query.isActive = isActive;
     }
 
-    // Get total count
-    const total = await Vendor.countDocuments(query);
+    // Try MongoDB first
+    try {
+      const total = await Vendor.countDocuments(query);
+      const vendorsList = await Vendor.find(query)
+        .populate("categories", "name")
+        .sort({ name: 1 })
+        .skip(startIndex)
+        .limit(limit);
 
-    // Get vendors
-    const vendors = await Vendor.find(query)
-      .populate("categories", "name")
-      .sort({ name: 1 })
-      .skip(startIndex)
-      .limit(limit);
+      const pagination = {
+        total,
+        page,
+        pages: Math.ceil(total / limit) || 1,
+        limit,
+      };
 
-    // Pagination result
-    const pagination = {
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
-    };
+      res.status(200).json({
+        success: true,
+        count: vendorsList.length,
+        pagination,
+        data: vendorsList,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    // PostgreSQL fallback
+    let allVendors = await db.query.vendors.findMany();
+    if (search) {
+      const s = search.toLowerCase();
+      allVendors = allVendors.filter(
+        (v) =>
+          v.name?.toLowerCase().includes(s) ||
+          v.contactPerson?.toLowerCase().includes(s) ||
+          v.email?.toLowerCase().includes(s),
+      );
+    }
+    if (category) {
+      allVendors = allVendors.filter(
+        (v) =>
+          Array.isArray(v.categories) &&
+          (v.categories as any[]).includes(category),
+      );
+    }
+    if (req.query.verified !== undefined) {
+      allVendors = allVendors.filter((v) => v.isVerified === isVerified);
+    }
+    if (req.query.active !== undefined) {
+      allVendors = allVendors.filter((v) => v.isActive === isActive);
+    }
+
+    const totalPg = allVendors.length;
+    allVendors.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const paginated = allVendors.slice(startIndex, startIndex + limit);
+
+    const data = paginated.map((v) => ({
+      _id: v.id,
+      ...v,
+    }));
 
     res.status(200).json({
       success: true,
-      count: vendors.length,
-      pagination,
-      data: vendors,
+      count: data.length,
+      pagination: {
+        total: totalPg,
+        page,
+        pages: Math.ceil(totalPg / limit) || 1,
+        limit,
+      },
+      data,
     });
   } catch (error) {
     next(error);
@@ -86,12 +138,29 @@ export const getVendor = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const vendor = await Vendor.findById(req.params.id).populate(
-      "categories",
-      "name description",
-    );
+    const id = String(req.params.id);
+    try {
+      const vendor = await Vendor.findById(id).populate(
+        "categories",
+        "name description",
+      );
 
-    if (!vendor) {
+      if (vendor) {
+        res.status(200).json({
+          success: true,
+          data: vendor,
+        });
+        return;
+      }
+    } catch (error) {
+      // Fallback to PostgreSQL
+    }
+
+    const pgVendor = await db.query.vendors.findFirst({
+      where: eq(vendors.id, id),
+    });
+
+    if (!pgVendor) {
       res.status(404).json({
         success: false,
         message: "Vendor not found",
@@ -101,7 +170,10 @@ export const getVendor = async (
 
     res.status(200).json({
       success: true,
-      data: vendor,
+      data: {
+        _id: pgVendor.id,
+        ...pgVendor,
+      },
     });
   } catch (error) {
     next(error);
@@ -144,9 +216,37 @@ export const createVendor = async (
     }
 
     // Check if vendor with same email already exists
-    const existingVendor = await Vendor.findOne({ email: req.body.email });
+    const id = new mongoose.Types.ObjectId().toString();
+    try {
+      const existingVendor = await Vendor.findOne({ email: req.body.email });
 
-    if (existingVendor) {
+      if (existingVendor) {
+        res.status(400).json({
+          success: false,
+          message: "Vendor with this email already exists",
+        });
+        return;
+      }
+
+      // Create vendor
+      const vendor = await Vendor.create(req.body);
+
+      // Populate categories
+      await vendor.populate("categories", "name");
+
+      res.status(201).json({
+        success: true,
+        data: vendor,
+      });
+      return;
+    } catch (error) {
+      // Fallback to PostgreSQL
+    }
+
+    const existingPg = await db.query.vendors.findFirst({
+      where: eq(vendors.email, req.body.email),
+    });
+    if (existingPg) {
       res.status(400).json({
         success: false,
         message: "Vendor with this email already exists",
@@ -154,15 +254,33 @@ export const createVendor = async (
       return;
     }
 
-    // Create vendor
-    const vendor = await Vendor.create(req.body);
+    const newVendor = {
+      id,
+      name: req.body.name,
+      contactPerson: req.body.contactPerson,
+      contactPersonDesignation: req.body.contactPersonDesignation || null,
+      email: req.body.email,
+      phone: req.body.phone,
+      address: req.body.address,
+      website: req.body.website || null,
+      dateOfIncorporation: req.body.dateOfIncorporation
+        ? new Date(req.body.dateOfIncorporation)
+        : null,
+      categories: req.body.categories || [],
+      documents: req.body.documents || [],
+      cacDocument: req.body.cacDocument || null,
+      rating: req.body.rating ? String(req.body.rating) : null,
+      isVerified: Boolean(req.body.isVerified),
+      isActive: req.body.isActive !== false,
+      status: req.body.status || "pending",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
 
-    // Populate categories
-    await vendor.populate("categories", "name");
-
+    await db.insert(vendors).values(newVendor);
     res.status(201).json({
       success: true,
-      data: vendor,
+      data: { _id: id, ...newVendor },
     });
   } catch (error) {
     next(error);
@@ -178,9 +296,44 @@ export const updateVendor = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    let vendor = await Vendor.findById(req.params.id);
+    const id = String(req.params.id);
+    try {
+      let vendor = await Vendor.findById(id);
 
-    if (!vendor) {
+      if (vendor) {
+        // Check if email is being updated and already exists
+        if (req.body.email && req.body.email !== vendor.email) {
+          const existingVendor = await Vendor.findOne({ email: req.body.email });
+          if (existingVendor) {
+            res.status(400).json({
+              success: false,
+              message: "Vendor with this email already exists",
+            });
+            return;
+          }
+        }
+
+        // Update vendor
+        vendor = await Vendor.findByIdAndUpdate(id, req.body, {
+          new: true,
+          runValidators: true,
+        }).populate("categories", "name");
+
+        res.status(200).json({
+          success: true,
+          data: vendor,
+        });
+        return;
+      }
+    } catch (error) {
+      // Fallback to PostgreSQL
+    }
+
+    const existingPg = await db.query.vendors.findFirst({
+      where: eq(vendors.id, id),
+    });
+
+    if (!existingPg) {
       res.status(404).json({
         success: false,
         message: "Vendor not found",
@@ -188,10 +341,11 @@ export const updateVendor = async (
       return;
     }
 
-    // Check if email is being updated and already exists
-    if (req.body.email && req.body.email !== vendor.email) {
-      const existingVendor = await Vendor.findOne({ email: req.body.email });
-      if (existingVendor) {
+    if (req.body.email && req.body.email !== existingPg.email) {
+      const duplicate = await db.query.vendors.findFirst({
+        where: eq(vendors.email, req.body.email),
+      });
+      if (duplicate) {
         res.status(400).json({
           success: false,
           message: "Vendor with this email already exists",
@@ -200,15 +354,35 @@ export const updateVendor = async (
       }
     }
 
-    // Update vendor
-    vendor = await Vendor.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    }).populate("categories", "name");
+    const updates: any = { updatedAt: new Date() };
+    if (req.body.name) updates.name = req.body.name;
+    if (req.body.contactPerson) updates.contactPerson = req.body.contactPerson;
+    if (req.body.contactPersonDesignation !== undefined)
+      updates.contactPersonDesignation = req.body.contactPersonDesignation;
+    if (req.body.email) updates.email = req.body.email;
+    if (req.body.phone) updates.phone = req.body.phone;
+    if (req.body.address) updates.address = req.body.address;
+    if (req.body.website !== undefined) updates.website = req.body.website;
+    if (req.body.dateOfIncorporation !== undefined)
+      updates.dateOfIncorporation = req.body.dateOfIncorporation
+        ? new Date(req.body.dateOfIncorporation)
+        : null;
+    if (req.body.categories) updates.categories = req.body.categories;
+    if (req.body.isVerified !== undefined)
+      updates.isVerified = Boolean(req.body.isVerified);
+    if (req.body.isActive !== undefined)
+      updates.isActive = Boolean(req.body.isActive);
+    if (req.body.status) updates.status = req.body.status;
+
+    await db.update(vendors).set(updates).where(eq(vendors.id, id));
+
+    const updatedPg = await db.query.vendors.findFirst({
+      where: eq(vendors.id, id),
+    });
 
     res.status(200).json({
       success: true,
-      data: vendor,
+      data: { _id: id, ...updatedPg },
     });
   } catch (error) {
     next(error);
@@ -224,9 +398,62 @@ export const deleteVendor = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const vendor = await Vendor.findById(req.params.id);
+    const id = String(req.params.id);
+    try {
+      const vendor = await Vendor.findById(id);
 
-    if (!vendor) {
+      if (vendor) {
+        // Check if vendor has any bids or purchase orders
+        const rfqCount = await RFQ.countDocuments({
+          "bids.vendor": id,
+        });
+
+        const purchaseOrderCount = await PurchaseOrder.countDocuments({
+          vendor: id,
+        });
+
+        if (rfqCount > 0 || purchaseOrderCount > 0) {
+          res.status(400).json({
+            success: false,
+            message: `Cannot delete vendor with ${rfqCount} bids and ${purchaseOrderCount} purchase orders. Consider deactivating instead.`,
+          });
+          return;
+        }
+
+        // Delete vendor documents from S3 if they exist
+        if (vendor.cacDocument?.url) {
+          const deleted = await deleteFileByUrl(vendor.cacDocument.url);
+          if (!deleted) {
+            console.error("Error deleting CAC document from S3");
+          }
+        }
+
+        if (vendor.documents && vendor.documents.length > 0) {
+          for (const doc of vendor.documents) {
+            const deleted = await deleteFileByUrl(doc.url);
+            if (!deleted) {
+              console.error("Error deleting document from S3");
+            }
+          }
+        }
+
+        await vendor.deleteOne();
+
+        res.status(200).json({
+          success: true,
+          data: {},
+        });
+        return;
+      }
+    } catch (error) {
+      // Fallback to PostgreSQL
+    }
+
+    const existingPg = await db.query.vendors.findFirst({
+      where: eq(vendors.id, id),
+    });
+
+    if (!existingPg) {
       res.status(404).json({
         success: false,
         message: "Vendor not found",
@@ -234,41 +461,7 @@ export const deleteVendor = async (
       return;
     }
 
-    // Check if vendor has any bids or purchase orders
-    const rfqCount = await RFQ.countDocuments({
-      "bids.vendor": req.params.id,
-    });
-
-    const purchaseOrderCount = await PurchaseOrder.countDocuments({
-      vendor: req.params.id,
-    });
-
-    if (rfqCount > 0 || purchaseOrderCount > 0) {
-      res.status(400).json({
-        success: false,
-        message: `Cannot delete vendor with ${rfqCount} bids and ${purchaseOrderCount} purchase orders. Consider deactivating instead.`,
-      });
-      return;
-    }
-
-    // Delete vendor documents from S3 if they exist
-    if (vendor.cacDocument?.url) {
-      const deleted = await deleteFileByUrl(vendor.cacDocument.url);
-      if (!deleted) {
-        console.error("Error deleting CAC document from S3");
-      }
-    }
-
-    if (vendor.documents && vendor.documents.length > 0) {
-      for (const doc of vendor.documents) {
-        const deleted = await deleteFileByUrl(doc.url);
-        if (!deleted) {
-          console.error("Error deleting document from S3");
-        }
-      }
-    }
-
-    await vendor.deleteOne();
+    await db.delete(vendors).where(eq(vendors.id, id));
 
     res.status(200).json({
       success: true,

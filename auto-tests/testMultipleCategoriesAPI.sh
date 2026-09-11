@@ -10,7 +10,7 @@ echo "════════════════════════�
 echo ""
 
 # Configuration
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 VENDOR_ID="68ee216e2dfd88298d5d3dce"  # Vendor with multiple categories
 TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4ZWUyMTZlMmRmZDg4Mjk4ZDVkM2RkMCIsImlhdCI6MTc2MDQ0NzE1OSwiZXhwIjoxNzYwNDkwMzU5fQ.5uMo9YDAijJ7C9S62xhRC64N_lzIpy1KZiGCpx7xVe0"
 

@@ -2,6 +2,10 @@ import { Request, Response, NextFunction } from "express";
 import VendorCategory from "../models/vendorCategory.model";
 import Vendor from "../models/vendor.model";
 import { UserRole } from "../types/enums";
+import { db } from "../db";
+import { vendorCategories } from "../db/schema";
+import { eq, ilike, or } from "drizzle-orm";
+import mongoose from "mongoose";
 
 // @desc    Get all vendor categories
 // @route   GET /api/vendor-categories
@@ -19,39 +23,69 @@ export const getVendorCategories = async (
 
     // Filtering
     const search = req.query.search as string;
-    let query = {};
 
-    if (search) {
-      query = {
-        $or: [
-          { name: { $regex: search, $options: "i" } },
-          { description: { $regex: search, $options: "i" } },
-        ],
-      };
+    try {
+      let query = {};
+      if (search) {
+        query = {
+          $or: [
+            { name: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
+          ],
+        };
+      }
+
+      const total = await VendorCategory.countDocuments(query);
+      const categories = await VendorCategory.find(query)
+        .sort({ name: 1 })
+        .skip(startIndex)
+        .limit(limit);
+
+      if (categories && categories.length > 0) {
+        res.status(200).json({
+          success: true,
+          count: categories.length,
+          pagination: {
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            limit,
+          },
+          data: categories,
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
     }
 
-    // Get total count
-    const total = await VendorCategory.countDocuments(query);
+    // PostgreSQL fallback
+    let pgCats = await db.query.vendorCategories.findMany();
+    if (search) {
+      const lower = search.toLowerCase();
+      pgCats = pgCats.filter(
+        (c) =>
+          c.name.toLowerCase().includes(lower) ||
+          (c.description && c.description.toLowerCase().includes(lower))
+      );
+    }
 
-    // Get vendor categories
-    const vendorCategories = await VendorCategory.find(query)
-      .sort({ name: 1 })
-      .skip(startIndex)
-      .limit(limit);
-
-    // Pagination result
-    const pagination = {
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
-    };
+    const total = pgCats.length;
+    const paginated = pgCats.slice(startIndex, startIndex + limit).map((c) => ({
+      _id: c.id,
+      ...c,
+    }));
 
     res.status(200).json({
       success: true,
-      count: vendorCategories.length,
-      pagination,
-      data: vendorCategories,
+      count: paginated.length,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit) || 1,
+        limit,
+      },
+      data: paginated,
     });
   } catch (error) {
     next(error);
@@ -67,9 +101,25 @@ export const getVendorCategory = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const vendorCategory = await VendorCategory.findById(req.params.id);
+    const id = String(req.params.id);
+    try {
+      const vendorCategory = await VendorCategory.findById(id);
+      if (vendorCategory) {
+        res.status(200).json({
+          success: true,
+          data: vendorCategory,
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
 
-    if (!vendorCategory) {
+    const pgCat = await db.query.vendorCategories.findFirst({
+      where: eq(vendorCategories.id, id),
+    });
+
+    if (!pgCat) {
       res.status(404).json({
         success: false,
         message: "Vendor category not found",
@@ -79,7 +129,7 @@ export const getVendorCategory = async (
 
     res.status(200).json({
       success: true,
-      data: vendorCategory,
+      data: { _id: pgCat.id, ...pgCat },
     });
   } catch (error) {
     next(error);
@@ -106,13 +156,43 @@ export const createVendorCategory = async (
       return;
     }
 
-    // Case-insensitive check with trimmed name (Requirement F2)
-    const escapedName = rawName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const existingCategory = await VendorCategory.findOne({
-      name: { $regex: new RegExp(`^${escapedName}$`, "i") },
+    try {
+      // Case-insensitive check with trimmed name (Requirement F2)
+      const escapedName = rawName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const existingCategory = await VendorCategory.findOne({
+        name: { $regex: new RegExp(`^${escapedName}$`, "i") },
+      });
+
+      if (existingCategory) {
+        res.status(400).json({
+          success: false,
+          message: "Vendor category with this name already exists",
+        });
+        return;
+      }
+
+      // Create vendor category in MongoDB
+      const vendorCategory = await VendorCategory.create({
+        ...req.body,
+        name: rawName,
+        createdBy: req.user?._id,
+      });
+
+      res.status(201).json({
+        success: true,
+        data: vendorCategory,
+      });
+      return;
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    // Check existing in PostgreSQL
+    const existingPg = await db.query.vendorCategories.findFirst({
+      where: ilike(vendorCategories.name, rawName),
     });
 
-    if (existingCategory) {
+    if (existingPg) {
       res.status(400).json({
         success: false,
         message: "Vendor category with this name already exists",
@@ -120,16 +200,19 @@ export const createVendorCategory = async (
       return;
     }
 
-    // Create vendor category
-    const vendorCategory = await VendorCategory.create({
-      ...req.body,
+    const id = new mongoose.Types.ObjectId().toString();
+    const newCat = {
+      id,
       name: rawName,
-      createdBy: req.user?._id,
-    });
+      description: req.body.description || null,
+      createdById: req.user?.id?.toString() || req.user?._id?.toString() || null,
+    };
+
+    await db.insert(vendorCategories).values(newCat);
 
     res.status(201).json({
       success: true,
-      data: vendorCategory,
+      data: { _id: id, ...newCat },
     });
   } catch (error) {
     next(error);
@@ -145,10 +228,51 @@ export const updateVendorCategory = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    // Check if category exists
-    let vendorCategory = await VendorCategory.findById(req.params.id);
+    const id = String(req.params.id);
+    try {
+      // Check if category exists
+      let vendorCategory = await VendorCategory.findById(id);
+      if (vendorCategory) {
+        if (req.body.name) {
+          const existingCategory = await VendorCategory.findOne({
+            name: req.body.name,
+            _id: { $ne: id },
+          });
 
-    if (!vendorCategory) {
+          if (existingCategory) {
+            res.status(400).json({
+              success: false,
+              message: "Vendor category with this name already exists",
+            });
+            return;
+          }
+        }
+
+        vendorCategory = await VendorCategory.findByIdAndUpdate(
+          id,
+          req.body,
+          {
+            new: true,
+            runValidators: true,
+          }
+        );
+
+        res.status(200).json({
+          success: true,
+          data: vendorCategory,
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    // PostgreSQL fallback
+    const existingPg = await db.query.vendorCategories.findFirst({
+      where: eq(vendorCategories.id, id),
+    });
+
+    if (!existingPg) {
       res.status(404).json({
         success: false,
         message: "Vendor category not found",
@@ -156,35 +280,22 @@ export const updateVendorCategory = async (
       return;
     }
 
-    // Check if another category with the same name already exists
-    if (req.body.name) {
-      const existingCategory = await VendorCategory.findOne({
-        name: req.body.name,
-        _id: { $ne: req.params.id },
-      });
+    const updates: Partial<{ name: string; description: string }> = {};
+    if (req.body.name) updates.name = req.body.name;
+    if (req.body.description !== undefined) updates.description = req.body.description;
 
-      if (existingCategory) {
-        res.status(400).json({
-          success: false,
-          message: "Vendor category with this name already exists",
-        });
-        return;
-      }
-    }
+    await db
+      .update(vendorCategories)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(vendorCategories.id, id));
 
-    // Update vendor category
-    vendorCategory = await VendorCategory.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      {
-        new: true,
-        runValidators: true,
-      }
-    );
+    const updated = await db.query.vendorCategories.findFirst({
+      where: eq(vendorCategories.id, id),
+    });
 
     res.status(200).json({
       success: true,
-      data: vendorCategory,
+      data: { _id: id, ...updated },
     });
   } catch (error) {
     next(error);
@@ -200,10 +311,38 @@ export const deleteVendorCategory = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    // Check if category exists
-    const vendorCategory = await VendorCategory.findById(req.params.id);
+    const id = String(req.params.id);
+    try {
+      const vendorCategory = await VendorCategory.findById(id);
+      if (vendorCategory) {
+        const vendorsUsingCategory = await Vendor.countDocuments({
+          categories: id,
+        });
 
-    if (!vendorCategory) {
+        if (vendorsUsingCategory > 0) {
+          res.status(400).json({
+            success: false,
+            message: `Cannot delete category that is being used by ${vendorsUsingCategory} vendors`,
+          });
+          return;
+        }
+
+        await vendorCategory.deleteOne();
+        res.status(200).json({
+          success: true,
+          data: {},
+        });
+        return;
+      }
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    const existingPg = await db.query.vendorCategories.findFirst({
+      where: eq(vendorCategories.id, id),
+    });
+
+    if (!existingPg) {
       res.status(404).json({
         success: false,
         message: "Vendor category not found",
@@ -211,35 +350,9 @@ export const deleteVendorCategory = async (
       return;
     }
 
-    // Check if category is being used by vendors
-    const vendorsUsingCategory = await Vendor.countDocuments({
-      categories: req.params.id,
-    });
-
-    if (vendorsUsingCategory > 0) {
-      res.status(400).json({
-        success: false,
-        message: `Cannot delete category that is being used by ${vendorsUsingCategory} vendors`,
-      });
-      return;
-    }
-
-    // Check if category is being used in requisitions
-    // This would require checking the Requisition model, but I'll assume it's similar to the Vendor check
-    // const requisitionsUsingCategory = await Requisition.countDocuments({
-    //   vendorCategory: req.params.id,
-    // });
-    //
-    // if (requisitionsUsingCategory > 0) {
-    //   res.status(400).json({
-    //     success: false,
-    //     message: `Cannot delete category that is being used by ${requisitionsUsingCategory} requisitions`,
-    //   });
-    //   return;
-    // }
-
-    // Delete vendor category
-    await vendorCategory.deleteOne();
+    await db
+      .delete(vendorCategories)
+      .where(eq(vendorCategories.id, id));
 
     res.status(200).json({
       success: true,

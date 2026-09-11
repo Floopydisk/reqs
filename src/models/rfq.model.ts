@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 import { RFQStatus } from "../types/enums";
+import { syncRfqToPostgres } from "../utils/pgSync";
 
 export interface IRFQItem {
   itemId: mongoose.Types.ObjectId; // Reference to item in requisition
@@ -205,6 +206,26 @@ rfqSchema.pre("save", function (next) {
 
   if (!this.vendor && this.vendors && this.vendors.length > 0) {
     this.vendor = this.vendors[0];
+  }
+  next();
+});
+
+rfqSchema.post("save", async function (doc, next) {
+  try {
+    await syncRfqToPostgres(doc);
+  } catch (err) {
+    console.error("PG Sync error (rfq save):", err);
+  }
+  next();
+});
+
+rfqSchema.post("findOneAndUpdate", async function (doc, next) {
+  if (doc) {
+    try {
+      await syncRfqToPostgres(doc);
+    } catch (err) {
+      console.error("PG Sync error (rfq findOneAndUpdate):", err);
+    }
   }
   next();
 });

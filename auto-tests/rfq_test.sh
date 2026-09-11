@@ -3,7 +3,7 @@
 # Load tokens
 source tokens.txt
 
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║         RFQ ENDPOINTS END-TO-END TEST SUITE                ║"

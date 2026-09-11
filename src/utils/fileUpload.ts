@@ -75,24 +75,20 @@ export const uploadToS3 = async (
   const key = `${folder.replace(/^\/+|\/+$/g, "")}/${Date.now()}-${uuidv4()}-${safeName}`;
   const { bucket } = getS3Config();
 
-  try {
-    await getS3Client().send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype || "application/octet-stream",
-      }),
-    );
+  await getS3Client().send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype || "application/octet-stream",
+    }),
+  );
 
-    return {
-      name: file.originalname,
-      url: buildS3FileUrl(key),
-      uploadedAt: new Date(),
-    };
-  } catch (error) {
-    throw error;
-  }
+  return {
+    name: file.originalname,
+    url: buildS3FileUrl(key),
+    uploadedAt: new Date(),
+  };
 };
 
 /**
@@ -112,24 +108,20 @@ export const uploadFilePathToS3 = async (
   const key = `${folder.replace(/^\/+|\/+$/g, "")}/${Date.now()}-${uuidv4()}-${safeName}`;
   const { bucket } = getS3Config();
 
-  try {
-    await getS3Client().send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: fs.createReadStream(filePath),
-        ContentType: mimeType,
-      }),
-    );
+  await getS3Client().send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: fs.createReadStream(filePath),
+      ContentType: mimeType,
+    }),
+  );
 
-    return {
-      name: fileName,
-      url: buildS3FileUrl(key),
-      uploadedAt: new Date(),
-    };
-  } catch (error) {
-    throw error;
-  }
+  return {
+    name: fileName,
+    url: buildS3FileUrl(key),
+    uploadedAt: new Date(),
+  };
 };
 
 /**
@@ -139,16 +131,12 @@ export const uploadFilePathToS3 = async (
 export const deleteFromS3 = async (key: string): Promise<void> => {
   const { bucket } = getS3Config();
 
-  try {
-    await getS3Client().send(
-      new DeleteObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-  } catch (error) {
-    throw error;
-  }
+  await getS3Client().send(
+    new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }),
+  );
 };
 
 const buildS3FileUrl = (key: string): string => {

@@ -6,12 +6,12 @@ TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4ZWUyMTZlMmRmZDg4Mjk4ZDVk
 
 echo "Checking bid opportunities for vendor $VENDOR_ID"
 curl -X GET \
-  "http://localhost:3003/api/vendors/$VENDOR_ID/opportunities?page=1&limit=10" \
+  "http://localhost:3000/api/vendors/$VENDOR_ID/opportunities?page=1&limit=10" \
   -H "accept: application/json" \
   -H "Authorization: Bearer $TOKEN"
 
 echo -e "\n\nChecking bid route:"
 curl -X GET \
-  "http://localhost:3003/api/bids?page=1&limit=10" \
+  "http://localhost:3000/api/bids?page=1&limit=10" \
   -H "accept: application/json" \
   -H "Authorization: Bearer $TOKEN"

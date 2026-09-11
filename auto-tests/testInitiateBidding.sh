@@ -10,7 +10,7 @@ echo "════════════════════════�
 echo ""
 
 # Configuration
-BASE_URL="http://localhost:3003/api"
+BASE_URL="http://localhost:3000/api"
 # Replace with a requisition in DEPARTMENT_APPROVED status
 REQUISITION_ID="YOUR_REQUISITION_ID"
 # Replace with actual token
