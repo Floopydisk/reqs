@@ -1,9 +1,9 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
-const User = require('./dist/models/user.model').default;
-const Department = require('./dist/models/department.model').default;
-const Location = require('./dist/models/location.model').default;
-const Requisition = require('./dist/models/requisition.model').default;
+const User = require('../dist/models/user.model').default;
+const Department = require('../dist/models/department.model').default;
+const Location = require('../dist/models/location.model').default;
+const Requisition = require('../dist/models/requisition.model').default;
 const { db } = require('./dist/db');
 const { requisitions } = require('./dist/db/schema');
 
