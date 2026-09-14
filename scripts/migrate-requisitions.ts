@@ -1,15 +1,13 @@
-import mongoose from "mongoose";
 import dotenv from "dotenv";
 import { db } from "../src/db";
 import { requisitions, requisitionItems, requisitionApprovals } from "../src/db/schema";
 import Requisition from "../src/models/requisition.model";
+import { generateId } from "../src/utils/objectIdHelper";
 
 dotenv.config();
 
 async function migrate() {
-  console.log("Connecting to MongoDB...");
-  await mongoose.connect(process.env.MONGODB_URI as string);
-  console.log("Connected to MongoDB.");
+  console.log("Starting requisitions migration...");
 
   console.log("Migrating requisitions...");
   const reqs = await Requisition.find();
@@ -41,7 +39,7 @@ async function migrate() {
       if (req.approvals && req.approvals.length > 0) {
         for (const app of req.approvals) {
           await db.insert(requisitionApprovals).values({
-            id: app._id ? app._id.toString() : new mongoose.Types.ObjectId().toString(),
+            id: app._id ? app._id.toString() : generateId(),
             requisitionId: req._id.toString(),
             stage: app.stage,
             approverId: app.approver.toString(),
@@ -55,7 +53,7 @@ async function migrate() {
       if (req.items && req.items.length > 0) {
         for (const item of req.items) {
           await db.insert(requisitionItems).values({
-            id: item._id ? item._id.toString() : new mongoose.Types.ObjectId().toString(),
+            id: item._id ? item._id.toString() : generateId(),
             requisitionId: req._id.toString(),
             itemName: item.itemName,
             itemType: item.itemType,

@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import dotenv from "dotenv";
 import { db } from "../src/db";
 import { users, departments, locations } from "../src/db/schema";
@@ -9,9 +8,7 @@ import Location from "../src/models/location.model";
 dotenv.config();
 
 async function migrate() {
-  console.log("Connecting to MongoDB...");
-  await mongoose.connect(process.env.MONGODB_URI as string);
-  console.log("Connected to MongoDB.");
+  console.log("Starting data migration...");
 
   // Migrate Departments
   console.log("Migrating departments...");

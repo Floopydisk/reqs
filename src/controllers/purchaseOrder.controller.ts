@@ -18,7 +18,7 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import mongoose from "../utils/objectIdHelper";
+import { startSession, isValidObjectId } from "../utils/objectIdHelper";
 
 const buildRelatedPayload = (
   requisition: any,
@@ -399,7 +399,7 @@ export const createPurchaseOrderFromRFQ = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -487,9 +487,6 @@ export const createPurchaseOrderFromRFQ = async (
       });
       return;
     }
-
-    const isValidObjectId = (value: any) =>
-      typeof value === "string" && mongoose.Types.ObjectId.isValid(value);
 
     // Resolve delivery location: accept ObjectId or resolve by location name
     let resolvedDeliveryLocation: any =

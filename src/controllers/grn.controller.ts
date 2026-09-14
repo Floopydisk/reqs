@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "../utils/objectIdHelper";
+import { startSession } from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import GRN from "../models/grn.model";
 import PurchaseOrder from "../models/purchaseOrder.model";
@@ -27,7 +27,7 @@ export const createGRNFromPO = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -385,7 +385,7 @@ export const receiverConfirmGRN = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -470,7 +470,7 @@ export const receiverRejectGRN = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -543,7 +543,7 @@ export const pmConfirmGRN = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "../utils/objectIdHelper";
+import { ClientSession, startSession, isValidObjectId } from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import RFQ from "../models/rfq.model";
 import Requisition from "../models/requisition.model";
@@ -85,7 +85,7 @@ const buildRelatedPayload = (
 };
 
 const syncRfqCounterWithExistingData = async (
-  session?: mongoose.ClientSession,
+  session?: ClientSession,
 ) => {
   const query = RFQ.findOne({
     rfqNumber: /^RFQ-\d{6}\s*$/,
@@ -255,7 +255,7 @@ export const generateRFQsFromRequisition = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -362,7 +362,7 @@ export const generateRFQsFromRequisition = async (
       ...new Set(vendors.map((v: string) => v.toString())),
     ];
     for (const vendorId of normalizedVendorIds) {
-      if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      if (!isValidObjectId(vendorId)) {
         await session.abortTransaction();
         res
           .status(400)
@@ -753,7 +753,7 @@ export const updateRFQ = async (
       }
 
       for (const vendorId of req.body.vendors) {
-        if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+        if (!isValidObjectId(vendorId)) {
           res.status(400).json({
             success: false,
             message: `Invalid vendor ID: ${vendorId}`,
@@ -819,7 +819,7 @@ export const issueRFQ = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -896,7 +896,7 @@ export const issueMultipleRFQs = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {
@@ -1140,7 +1140,7 @@ export const downloadRFQs = async (
         .filter(Boolean);
     }
 
-    if (vendorIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+    if (vendorIds.some((id) => !isValidObjectId(id))) {
       res.status(400).json({
         success: false,
         message: "vendorIds query must contain valid MongoDB ObjectIds",
@@ -1246,7 +1246,7 @@ export const uploadVendorQuote = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {

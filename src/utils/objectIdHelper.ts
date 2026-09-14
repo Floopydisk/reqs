@@ -87,19 +87,16 @@ export interface ClientSession {
   endSession: () => void;
 }
 
-export namespace mongooseCompat {
-  export type ClientSession = any;
-  export namespace Types {
-    export type ObjectId = any;
-  }
-}
-
-export const mongooseCompat = {
+export const dbUtils = {
   Types,
   isValidObjectId,
   startSession,
+  generateId,
+  toObjectId,
+  getUserId,
+  ObjectId,
 };
 
-export default mongooseCompat;
+export default dbUtils;
 
 

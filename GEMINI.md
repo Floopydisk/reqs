@@ -1,11 +1,11 @@
 # Project Overview
 
-This is a comprehensive procurement management platform built with Node.js, TypeScript, Express, and MongoDB. This system streamlines the entire procurement workflow from requisition creation through vendor bidding to purchase order fulfillment and delivery.
+This is a comprehensive procurement management platform built with Node.js, TypeScript, Express, and PostgreSQL (Drizzle ORM). This system streamlines the entire procurement workflow from requisition creation through vendor bidding to purchase order fulfillment and delivery.
 
 **Key Technologies:**
 
 * **Backend:** Node.js, Express, TypeScript
-* **Database:** MongoDB with Mongoose
+* **Database:** PostgreSQL with Drizzle ORM
 * **Authentication:** JWT (JSON Web Tokens)
 * **Real-time Communication:** WebSockets (socket.io)
 * **File Storage:** AWS S3
@@ -16,7 +16,7 @@ This is a comprehensive procurement management platform built with Node.js, Type
 **Prerequisites:**
 
 * Node.js (v16+)
-* MongoDB
+* PostgreSQL
 * pnpm (or npm/yarn)
 
 **Installation:**

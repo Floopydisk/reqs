@@ -3,7 +3,7 @@ import http from "http";
 import { initWebsocket } from "./utils/websocket";
 import { initQueue } from "./utils/queue";
 
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
 
 // Function to start the server
@@ -44,4 +44,4 @@ const startServer = async (port: number) => {
 };
 
 // Start the server
-startServer(Number(PORT));
+startServer(Number(PORT) || 3000);

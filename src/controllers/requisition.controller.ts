@@ -3,7 +3,7 @@ import { users, requisitions } from "../db/schema";
 import { eq, desc } from "drizzle-orm";
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { Request, Response, NextFunction } from "express";
-import mongoose from "../utils/objectIdHelper";
+import { ObjectId, isValidObjectId, getUserId } from "../utils/objectIdHelper";
 import Requisition from "../models/requisition.model";
 import Department from "../models/department.model";
 import User from "../models/user.model";
@@ -13,7 +13,6 @@ import { RequisitionStatus, UserRole, ItemStatus, RequisitionUrgency } from "../
 import { uploadToS3 } from "../utils/fileUpload";
 import emailService from "../utils/emailService";
 import requisitionHistoryModel from "../models/requisitionHistory.model";
-import { getUserId } from "../utils/objectIdHelper";
 import {
   notifications,
   // notifyUsers
@@ -44,7 +43,7 @@ const normalizeObjectId = (value: unknown): string | null => {
     return value;
   }
 
-  if (value instanceof mongoose.Types.ObjectId) {
+  if (value instanceof ObjectId) {
     return value.toString();
   }
 
@@ -59,7 +58,7 @@ const normalizeObjectId = (value: unknown): string | null => {
     }
   }
 
-  if (mongoose.isValidObjectId(value as any)) {
+  if (isValidObjectId(value as any)) {
     return (value as any).toString();
   }
 
@@ -1289,7 +1288,7 @@ export const getEligibleApprovers = async (
       role: { $in: allowedRoles },
     };
 
-    if (departmentId && mongoose.isValidObjectId(departmentId as string)) {
+    if (departmentId && isValidObjectId(departmentId as string)) {
       const dept = await Department.findById(departmentId);
       if (dept?.head) {
         filter.$or = [
@@ -1300,8 +1299,8 @@ export const getEligibleApprovers = async (
       }
     }
 
-    const mongooseApprovers = await User.find(filter).select("_id firstName lastName email role designation department isActive").populate("department", "name code").sort({ firstName: 1, lastName: 1 });
-    const approvers = mongooseApprovers.map((a: any) => ({ id: a._id?.toString() || a.id?.toString(), ...(a.toObject ? a.toObject() : a) }));
+    const rawApprovers = await User.find(filter).select("_id firstName lastName email role designation department isActive").populate("department", "name code").sort({ firstName: 1, lastName: 1 });
+    const approvers = rawApprovers.map((a: any) => ({ id: a._id?.toString() || a.id?.toString(), ...(a.toObject ? a.toObject() : a) }));
 
     res.status(200).json({
       success: true,

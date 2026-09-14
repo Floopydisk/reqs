@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { UserRole, RequisitionStatus, PurchaseOrderStatus, ItemStatus, JCFStatus, RequisitionUrgency } from "../src/types/enums";
 import Requisition from "../src/models/requisition.model";
 import PurchaseOrder from "../src/models/purchaseOrder.model";

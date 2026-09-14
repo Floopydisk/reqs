@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "../utils/objectIdHelper";
+import { startSession } from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
@@ -25,7 +25,7 @@ export const createJCFFromPO = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const session = await mongoose.startSession();
+  const session = await startSession();
   session.startTransaction();
 
   try {

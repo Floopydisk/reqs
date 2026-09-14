@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-namespace */
+export type ObjectId = any;
+
 export interface Document {
   _id?: any;
   id?: string;
@@ -23,17 +25,6 @@ export const Types = {
   },
 };
 
-export namespace mongoose {
-  export namespace Types {
-    export type ObjectId = any;
-  }
-  export type Document = any;
-}
-
-export const mongoose = {
-  Types,
-  Document: {} as any,
-};
 import {
   UserRole,
   RequisitionStatus,
@@ -83,7 +74,7 @@ export interface IDepartment extends Document {
 export interface IVendorCategory extends Document {
   name: string;
   description?: string;
-  createdBy?: mongoose.Types.ObjectId;
+  createdBy?: ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -118,7 +109,7 @@ export interface IVendor extends Document {
 }
 
 export interface IItem {
-  _id?: mongoose.Types.ObjectId;
+  _id?: ObjectId;
   itemName: string;
   itemType: "product" | "service";
   preferredBrand?: string;
@@ -126,34 +117,34 @@ export interface IItem {
   uploadImage?: string;
   units?: number;
   UOM?: string;
-  recommendedVendor?: mongoose.Types.ObjectId;
+  recommendedVendor?: ObjectId;
   isWorkTool: boolean;
   // Item-level status tracking
   status?: string;
   // HOD approval
-  departmentApprovedBy?: mongoose.Types.ObjectId;
+  departmentApprovedBy?: ObjectId;
   departmentApprovedAt?: Date;
-  departmentRejectedBy?: mongoose.Types.ObjectId;
+  departmentRejectedBy?: ObjectId;
   departmentRejectedAt?: Date;
   departmentComments?: string;
   // HR approval (for working tools)
-  hrApprovedBy?: mongoose.Types.ObjectId;
+  hrApprovedBy?: ObjectId;
   hrApprovedAt?: Date;
-  hrRejectedBy?: mongoose.Types.ObjectId;
+  hrRejectedBy?: ObjectId;
   hrRejectedAt?: Date;
   hrComments?: string;
   // @deprecated - HHRA fields kept for backward compatibility
-  hhraApprovedBy?: mongoose.Types.ObjectId;
+  hhraApprovedBy?: ObjectId;
   hhraApprovedAt?: Date;
-  hhraRejectedBy?: mongoose.Types.ObjectId;
+  hhraRejectedBy?: ObjectId;
   hhraRejectedAt?: Date;
   hhraComments?: string;
   procurementComments?: string;
   // RFQ reference
-  rfq?: mongoose.Types.ObjectId;
+  rfq?: ObjectId;
   // @deprecated - bidding fields
-  selectedVendorsForItem?: mongoose.Types.ObjectId[];
-  purchaseOrder?: mongoose.Types.ObjectId;
+  selectedVendorsForItem?: ObjectId[];
+  purchaseOrder?: ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -171,12 +162,12 @@ export interface IRequisition extends Document {
   title: string;
   urgency?: RequisitionUrgency;
   justification: string;
-  deliveryLocation: mongoose.Types.ObjectId;
+  deliveryLocation: ObjectId;
   deliveryDate: Date;
   items: IItem[];
-  requester: mongoose.Types.ObjectId;
-  department: mongoose.Types.ObjectId;
-  assignedApprover?: mongoose.Types.ObjectId;
+  requester: ObjectId;
+  department: ObjectId;
+  assignedApprover?: ObjectId;
   status: RequisitionStatus;
   requestApprovedAt?: Date;
   poApprovedAt?: Date;
@@ -187,15 +178,15 @@ export interface IRequisition extends Document {
   }[];
   approvals?: {
     stage: string;
-    approver: mongoose.Types.ObjectId; // Reference to User
+    approver: ObjectId; // Reference to User
     status: "approved" | "rejected" | "pending";
     comments?: string;
     timestamp: Date;
   }[];
-  vendorCategory?: mongoose.Types.ObjectId; // Reference to VendorCategory
+  vendorCategory?: ObjectId; // Reference to VendorCategory
   additionalInfo?: string; // Additional information
-  purchaseOrder?: mongoose.Types.ObjectId; // Reference to PurchaseOrder
-  delivery?: mongoose.Types.ObjectId; // Reference to Delivery (deprecated - use GRN)
+  purchaseOrder?: ObjectId; // Reference to PurchaseOrder
+  delivery?: ObjectId; // Reference to Delivery (deprecated - use GRN)
   createdAt: Date;
   updatedAt: Date;
   cancelledBy?: string;
@@ -207,13 +198,13 @@ export interface IRequisition extends Document {
   paymentDate?: Date;
   paymentReference?: string;
   paymentNotes?: string;
-  paymentBy?: mongoose.Types.ObjectId;
-  relatedRfqs?: mongoose.Types.ObjectId[];
-  relatedPos?: mongoose.Types.ObjectId[];
+  paymentBy?: ObjectId;
+  relatedRfqs?: ObjectId[];
+  relatedPos?: ObjectId[];
 }
 
 export interface IPurchaseOrderApproval {
-  approver: mongoose.Types.ObjectId;
+  approver: ObjectId;
   approverRole: "hof" | "hhr";
   status?: "approved" | "rejected" | "pending";
   approvedAt?: Date;
@@ -223,17 +214,17 @@ export interface IPurchaseOrderApproval {
 }
 
 export interface IPurchaseOrderQuote {
-  vendor?: mongoose.Types.ObjectId;
+  vendor?: ObjectId;
   filename: string;
   url: string;
   mimeType?: string;
   size?: number;
   uploadedAt: Date;
-  uploadedBy?: mongoose.Types.ObjectId;
+  uploadedBy?: ObjectId;
 }
 
 export interface IPurchaseOrderItem {
-  itemId?: mongoose.Types.ObjectId;
+  itemId?: ObjectId;
   itemDescription: string;
   detailsSpecification?: string;
   quantity: number;
@@ -247,9 +238,9 @@ export interface IPurchaseOrderItem {
 export interface IPurchaseOrder extends Document {
   poNumber: string;
   title?: string;
-  requisition: mongoose.Types.ObjectId;
-  rfq: mongoose.Types.ObjectId;
-  vendor: mongoose.Types.ObjectId;
+  requisition: ObjectId;
+  rfq: ObjectId;
+  vendor: ObjectId;
   items: IPurchaseOrderItem[];
   subtotal?: number;
   discount?: number;
@@ -260,9 +251,9 @@ export interface IPurchaseOrder extends Document {
   vatAmount?: number;
   totalAmount: number;
   totalPrice?: number; // Compatibility alias
-  deliveryLocation: mongoose.Types.ObjectId;
+  deliveryLocation: ObjectId;
   deliveryDate: Date;
-  deliveryContact: mongoose.Types.ObjectId;
+  deliveryContact: ObjectId;
   deliveryAddressSnapshot?: {
     name: string;
     address?: string;
@@ -280,8 +271,8 @@ export interface IPurchaseOrder extends Document {
   vendorQuotes?: IPurchaseOrderQuote[];
   approvals: IPurchaseOrderApproval[];
   status: PurchaseOrderStatus;
-  createdBy: mongoose.Types.ObjectId;
-  submittedBy?: mongoose.Types.ObjectId;
+  createdBy: ObjectId;
+  submittedBy?: ObjectId;
   submittedAt?: Date;
   pdfUrl?: string;
   serviceClassificationOverride?: string;
@@ -289,11 +280,11 @@ export interface IPurchaseOrder extends Document {
   createdAt: Date;
   updatedAt: Date;
   // @deprecated fields - kept for backward compatibility
-  bid?: mongoose.Types.ObjectId;
+  bid?: ObjectId;
   notes?: string;
-  issuedBy?: mongoose.Types.ObjectId;
+  issuedBy?: ObjectId;
   issuedAt?: Date;
-  acknowledgedBy?: mongoose.Types.ObjectId | string;
+  acknowledgedBy?: ObjectId | string;
   acknowledgedAt?: Date;
   attachments?: {
     name: string;
@@ -303,7 +294,7 @@ export interface IPurchaseOrder extends Document {
 }
 
 export interface IJCFApproval {
-  approver: mongoose.Types.ObjectId;
+  approver: ObjectId;
   status: "approved" | "rejected" | "pending";
   comments?: string;
   approvedAt?: Date;
@@ -312,11 +303,11 @@ export interface IJCFApproval {
 
 export interface IJCF extends Document {
   jcfNumber: string;
-  purchaseOrder: mongoose.Types.ObjectId;
-  requisition: mongoose.Types.ObjectId;
-  vendor: mongoose.Types.ObjectId;
-  createdBy: mongoose.Types.ObjectId; // PM
-  approver: mongoose.Types.ObjectId; // Requester
+  purchaseOrder: ObjectId;
+  requisition: ObjectId;
+  vendor: ObjectId;
+  createdBy: ObjectId; // PM
+  approver: ObjectId; // Requester
   serviceDescription: string;
   completionEvidence?: string;
   rating?: number;
@@ -334,7 +325,7 @@ export interface IJCF extends Document {
 }
 
 export interface IRFQItem {
-  itemId: mongoose.Types.ObjectId; // Reference to item in requisition
+  itemId: ObjectId; // Reference to item in requisition
   itemDescription: string; // Item Name + Brand
   detailedSpecification: string; // From item description
   uom: string;
@@ -345,24 +336,24 @@ export interface IRFQItem {
 export interface IRFQ extends Document {
   rfqNumber: string;
   title: string;
-  requisition: mongoose.Types.ObjectId;
-  vendors: mongoose.Types.ObjectId[];
-  vendor: mongoose.Types.ObjectId; // Reference to Vendor Master
-  relatedPos?: mongoose.Types.ObjectId[];
+  requisition: ObjectId;
+  vendors: ObjectId[];
+  vendor: ObjectId; // Reference to Vendor Master
+  relatedPos?: ObjectId[];
   items: IRFQItem[];
   evaluationCriteria: string;
   termsAndConditions: string;
-  deliveryLocation: mongoose.Types.ObjectId;
+  deliveryLocation: ObjectId;
   expectedDeliveryDate?: Date;
   status: RFQStatus;
-  createdBy: mongoose.Types.ObjectId;
+  createdBy: ObjectId;
   issuedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export interface IGRNItem {
-  itemId: mongoose.Types.ObjectId; // Reference to item in PO
+  itemId: ObjectId; // Reference to item in PO
   itemDescription: string;
   quantityOrdered: number;
   quantityReceived: number;
@@ -372,7 +363,7 @@ export interface IGRNItem {
 }
 
 export interface IGRNApproval {
-  approver: mongoose.Types.ObjectId;
+  approver: ObjectId;
   approverRole: string; // "receiver" | "pm"
   status: "pending" | "approved" | "rejected";
   approvedAt?: Date;
@@ -381,13 +372,13 @@ export interface IGRNApproval {
 
 export interface IGRN extends Document {
   grnNumber: string;
-  purchaseOrder: mongoose.Types.ObjectId;
-  requisition: mongoose.Types.ObjectId;
+  purchaseOrder: ObjectId;
+  requisition: ObjectId;
   items: IGRNItem[];
   generalRemarks?: string;
   // Approval chain: Store Manager creates -> Receiver confirms -> PM final confirmation
-  createdBy: mongoose.Types.ObjectId; // Store Manager
-  receiver: mongoose.Types.ObjectId; // Defaults to requester, can be edited
+  createdBy: ObjectId; // Store Manager
+  receiver: ObjectId; // Defaults to requester, can be edited
   approvals: IGRNApproval[];
   status: GRNStatus;
   deliveredAt?: Date; // Final confirmation timestamp
@@ -397,9 +388,9 @@ export interface IGRN extends Document {
 
 export interface IDelivery extends Document {
   deliveryNumber: string;
-  purchaseOrder: mongoose.Types.ObjectId;
-  requisition: mongoose.Types.ObjectId; // Reference to Requisition
-  vendor: mongoose.Types.ObjectId; // Reference to Vendor
+  purchaseOrder: ObjectId;
+  requisition: ObjectId; // Reference to Requisition
+  vendor: ObjectId; // Reference to Vendor
   items: {
     name: string;
     description?: string;
@@ -435,10 +426,10 @@ export interface IDelivery extends Document {
 }
 
 export interface IItemHistory extends Document {
-  requisitionId: mongoose.Types.ObjectId;
-  itemId: mongoose.Types.ObjectId;
+  requisitionId: ObjectId;
+  itemId: ObjectId;
   action: string;
-  performedBy: mongoose.Types.ObjectId;
+  performedBy: ObjectId;
   previousStatus?: string;
   newStatus?: string;
   comments?: string;
