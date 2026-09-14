@@ -5,7 +5,7 @@ import { UserRole, RequisitionStatus } from "../types/enums";
 import User from "../models/user.model";
 import { notifyUsers } from "../utils/notification";
 import { createError } from "../utils/httpError";
-import mongoose from "mongoose";
+import { isValidObjectId } from "../utils/objectIdHelper";
 
 // @desc    Add a comment to a requisition
 // @route   POST /api/requisitions/:requisitionId/comments
@@ -124,7 +124,7 @@ export const addComment = async (
     let parentCommentDoc: any = null;
     if (parentComment) {
       // First validate if it's a valid ObjectId
-      if (!mongoose.Types.ObjectId.isValid(parentComment)) {
+      if (!isValidObjectId(parentComment)) {
         return next(createError(400, "Invalid parent comment ID format"));
       }
 
@@ -156,7 +156,7 @@ export const addComment = async (
         finalTaggedUsers = [
           ...new Set(
             taggedUsers
-              .filter((id: string) => id && mongoose.Types.ObjectId.isValid(id))
+              .filter((id: string) => id && isValidObjectId(id))
               .map((id: string) => id.toString()),
           ),
         ];
@@ -167,8 +167,8 @@ export const addComment = async (
       const existingUsers = await User.find({
         _id: { $in: finalTaggedUsers },
       }).select("_id");
-      finalTaggedUsers = existingUsers.map((user) =>
-        (user._id as mongoose.Types.ObjectId).toString(),
+      finalTaggedUsers = existingUsers.map((user: any) =>
+        user._id?.toString() || "",
       );
     } catch (error) {
       console.error("Error processing tagged users:", error);
@@ -181,7 +181,7 @@ export const addComment = async (
       requisition: requisitionIdParam,
       parentComment: parentCommentDoc ? parentCommentDoc._id : undefined,
       taggedUsers: finalTaggedUsers,
-    })) as InstanceType<typeof Comment> & { _id: any };
+    })) as any;
 
     // Safely push to parent comments array if it exists on the schema
     try {
@@ -390,13 +390,13 @@ export const getComments = async (
 
     // Map for quick lookup
     const byId: Record<string, any> = {};
-    allComments.forEach((c) => {
+    allComments.forEach((c: any) => {
       byId[c._id.toString()] = { ...c, replies: [] };
     });
 
     // Build roots & attach children
     const roots: any[] = [];
-    allComments.forEach((c) => {
+    allComments.forEach((c: any) => {
       if (c.parentComment) {
         const parent = byId[c.parentComment.toString()];
         if (parent) parent.replies.push(byId[c._id.toString()]);
@@ -674,10 +674,10 @@ export const getCommentThread = async (
     if (!includeDeleted) baseFilter.isDeleted = { $ne: true };
     const all = await Comment.find(baseFilter).sort({ createdAt: 1 }).lean();
     const map: Record<string, any> = {};
-    all.forEach((c) => {
+    all.forEach((c: any) => {
       map[c._id.toString()] = { ...c, replies: [] };
     });
-    all.forEach((c) => {
+    all.forEach((c: any) => {
       if (c.parentComment) {
         const p = map[c.parentComment.toString()];
         if (p) p.replies.push(map[c._id.toString()]);
@@ -708,7 +708,7 @@ export const getCommentThread = async (
       .select("firstName lastName email")
       .lean();
     const uMap: Record<string, any> = {};
-    users.forEach((u) => (uMap[u._id.toString()] = u));
+    users.forEach((u: any) => (uMap[u._id.toString()] = u));
     const hydrate = (n: any) => {
       if (n.author) n.author = uMap[n.author.toString()] || n.author;
       if (n.taggedUsers?.length)

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
+import mongoose from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import GRN from "../models/grn.model";
 import PurchaseOrder from "../models/purchaseOrder.model";
@@ -422,7 +422,7 @@ export const receiverConfirmGRN = async (
 
     // Update receiver approval
     const receiverApproval = grn.approvals.find(
-      (approval) => approval.approverRole === "receiver"
+      (approval: any) => approval.approverRole === "receiver"
     );
 
     if (receiverApproval) {
@@ -437,7 +437,7 @@ export const receiverConfirmGRN = async (
     }).session(session);
     if (pmUser) {
       grn.approvals.push({
-        approver: pmUser._id as mongoose.Types.ObjectId,
+        approver: pmUser._id as any,
         approverRole: "pm",
         status: "pending",
       } as any);
@@ -507,7 +507,7 @@ export const receiverRejectGRN = async (
 
     // Update receiver approval
     const receiverApproval = grn.approvals.find(
-      (approval) => approval.approverRole === "receiver"
+      (approval: any) => approval.approverRole === "receiver"
     );
 
     if (receiverApproval) {
@@ -585,7 +585,7 @@ export const pmConfirmGRN = async (
 
     // Update PM approval
     const pmApproval = grn.approvals.find(
-      (approval) => approval.approverRole === "pm"
+      (approval: any) => approval.approverRole === "pm"
     );
 
     if (pmApproval) {
@@ -744,7 +744,7 @@ export const updateGRN = async (
       grn.receiver = req.body.receiver;
 
       const receiverApproval = grn.approvals.find(
-        (approval) => approval.approverRole === "receiver"
+        (approval: any) => approval.approverRole === "receiver"
       );
       if (receiverApproval) {
         receiverApproval.approver = req.body.receiver;
@@ -1065,7 +1065,7 @@ export const generateGRNPDF = async (
     drawTableHeader(tableY);
     tableY += 18 + rowHeight;
     doc.font("Helvetica").fontSize(8.5);
-    rows.forEach((item, index) => {
+    rows.forEach((item: any, index: number) => {
       if (tableY + rowHeight > doc.page.height - 110) {
         doc.addPage();
         tableY = doc.page.margins.top;
@@ -1081,7 +1081,7 @@ export const generateGRNPDF = async (
       tableY += rowHeight;
     });
 
-    const totalAmount = grn.items.reduce((sum, item) => sum + ((item.unitPriceFromPO || 0) * item.quantityReceived), 0);
+    const totalAmount = grn.items.reduce((sum: number, item: any) => sum + ((item.unitPriceFromPO || 0) * item.quantityReceived), 0);
     doc.y = tableY + 18;
     const totalsY = doc.y;
     const totalsLeft = right - 225;
@@ -1095,7 +1095,7 @@ export const generateGRNPDF = async (
     doc.font("Helvetica").text(totalAmount.toFixed(2), totalsLeft + 131, totalsY + 21);
     doc.y = totalsY + 58;
     doc.font("Helvetica-Bold").fontSize(10).text("RECEIVED CONDITION:");
-    doc.font("Helvetica").text([...new Set(grn.items.map((item) => item.condition))].join(", "));
+    doc.font("Helvetica").text([...new Set(grn.items.map((item: any) => item.condition))].join(", "));
     doc.moveDown(1.5);
     doc.font("Helvetica-Bold").text("COMMENTS:");
     doc.font("Helvetica").text(grn.generalRemarks || "");

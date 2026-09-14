@@ -113,7 +113,10 @@ export const authorize = (...roles: string[]) => {
       return;
     }
 
-    if (!roles.includes(req.user.role)) {
+    const userRole = (req.user.role || "").toLowerCase();
+    const allowed = roles.some((r) => r.toLowerCase() === userRole);
+
+    if (!allowed) {
       res.status(403).json({
         success: false,
         message: `User role ${req.user.role} is not authorized to access this route`,

@@ -7,7 +7,6 @@ import { UserRole } from "../types/enums";
 import { db } from "../db";
 import { departments, users } from "../db/schema";
 import { eq, ilike } from "drizzle-orm";
-import mongoose from "mongoose";
 
 /**
  * @desc    Get all departments
@@ -233,7 +232,7 @@ export const updateDepartment = async (
     // Handle members changes
     if (req.body.members) {
       // Get current members
-      const currentMembers = department.members.map((member) =>
+      const currentMembers = department.members.map((member: any) =>
         member.toString(),
       );
 
@@ -243,7 +242,7 @@ export const updateDepartment = async (
       );
 
       const membersToRemove = currentMembers.filter(
-        (member) => !req.body.members.includes(member),
+        (member: any) => !req.body.members.includes(member),
       );
 
       // Update new members' department
@@ -552,7 +551,7 @@ export const removeDepartmentMember = async (
 
     // Remove user from department members
     department.members = department.members.filter(
-      (member) => member.toString() !== (req.user as any)._id.toString(),
+      (member: any) => member.toString() !== (req.user as any)._id.toString(),
     );
     await department.save();
 

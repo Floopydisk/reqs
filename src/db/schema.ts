@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { pgTable, text, timestamp, boolean, varchar, json } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, varchar, json, integer } from 'drizzle-orm/pg-core';
 
 // Base ID approach: We'll use UUIDs for all primary keys to allow easy migration from Mongo ObjectIDs
 // If you want to use the exact same MongoDB ObjectIDs, you can store them as strings in a `legacy_id` column
@@ -387,4 +387,37 @@ export const notifications = pgTable('notifications', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
+
+export const counters = pgTable('counters', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  prefix: varchar('prefix', { length: 50 }).notNull(),
+  period: varchar('period', { length: 50 }).default('').notNull(),
+  sequence: integer('sequence').default(0).notNull(),
+});
+
+export const requisitionHistory = pgTable('requisition_history', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  requisitionId: varchar('requisition_id', { length: 255 }),
+  action: varchar('action', { length: 100 }).notNull(),
+  status: varchar('status', { length: 100 }).notNull(),
+  userId: varchar('user_id', { length: 255 }),
+  details: text('details'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const itemHistory = pgTable('item_history', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  requisitionId: varchar('requisition_id', { length: 255 }),
+  itemId: varchar('item_id', { length: 255 }).notNull(),
+  action: varchar('action', { length: 100 }).notNull(),
+  performedBy: varchar('performed_by', { length: 255 }),
+  previousStatus: varchar('previous_status', { length: 100 }),
+  newStatus: varchar('new_status', { length: 100 }),
+  comments: text('comments'),
+  metadata: json('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 

@@ -3,7 +3,7 @@ import { users, requisitions } from "../db/schema";
 import { eq, desc } from "drizzle-orm";
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
+import mongoose from "../utils/objectIdHelper";
 import Requisition from "../models/requisition.model";
 import Department from "../models/department.model";
 import User from "../models/user.model";
@@ -898,12 +898,12 @@ export const createRequisition = async (
       deliveryLocation: any;
       deliveryDate: any;
       items: any;
-      requester: mongoose.Types.ObjectId;
-      department: mongoose.Types.ObjectId;
+      requester: any;
+      department: any;
       status: RequisitionStatus;
       approvals?: {
         stage: string;
-        approver: mongoose.Types.ObjectId | null;
+        approver: any;
         status: "approved" | "rejected" | "pending";
         timestamp: Date;
       }[];
@@ -926,7 +926,7 @@ export const createRequisition = async (
     if (newRequisition.items && newRequisition.items.length > 0) {
       for (const item of newRequisition.items) {
         await logItemHistory(
-          (newRequisition._id as mongoose.Types.ObjectId).toString(),
+          newRequisition._id.toString(),
           (item as any)._id.toString(),
           "created",
           (req.user as any)._id.toString(),
@@ -1301,7 +1301,7 @@ export const getEligibleApprovers = async (
     }
 
     const mongooseApprovers = await User.find(filter).select("_id firstName lastName email role designation department isActive").populate("department", "name code").sort({ firstName: 1, lastName: 1 });
-  const approvers = mongooseApprovers.map(a => ({ id: a._id.toString(), ...a.toObject() }));
+    const approvers = mongooseApprovers.map((a: any) => ({ id: a._id?.toString() || a.id?.toString(), ...(a.toObject ? a.toObject() : a) }));
 
     res.status(200).json({
       success: true,
@@ -1740,13 +1740,13 @@ export const hhraApproval = async (
 
     // Find the appropriate approval record
     let approvalIndex = requisition.approvals.findIndex(
-      (approval) => approval.stage === "HHRA",
+      (approval: any) => approval.stage === "HHRA",
     );
 
     // If HHRA approval not found, look for legacy HR approval
     if (approvalIndex === -1) {
       approvalIndex = requisition.approvals.findIndex(
-        (approval) => approval.stage === "HR",
+        (approval: any) => approval.stage === "HR",
       );
     }
 

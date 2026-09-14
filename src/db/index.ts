@@ -19,7 +19,7 @@ export const createPool = () => {
     
     global._postgresPool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' || process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false },
+      ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false },
       max: 10,
       connectionTimeoutMillis: 15000,
     });

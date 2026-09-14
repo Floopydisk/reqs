@@ -18,7 +18,7 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import mongoose from "mongoose";
+import mongoose from "../utils/objectIdHelper";
 
 const buildRelatedPayload = (
   requisition: any,
@@ -108,13 +108,13 @@ export const getPurchaseOrders = async (
         const requisitions = await Requisition.find({
           requester: req.user?._id,
         });
-        const requisitionIds = requisitions.map((req) => req._id);
+        const requisitionIds = requisitions.map((r: any) => r._id);
         query = { requisition: { $in: requisitionIds } };
       } else {
         const requisitions = await Requisition.find({
           department: req.user?.department,
         });
-        const requisitionIds = requisitions.map((req) => req._id);
+        const requisitionIds = requisitions.map((r: any) => r._id);
         query = { requisition: { $in: requisitionIds } };
       }
     }
@@ -589,8 +589,8 @@ export const createPurchaseOrderFromRFQ = async (
       return;
     }
 
-    const rfqItemLookup = new Map(
-      rfq.items.map((item: any) => [item.itemId.toString(), item]),
+    const rfqItemLookup = new Map<string, any>(
+      rfq.items.map((item: any) => [item.itemId?.toString?.() || "", item]),
     );
 
     // Build PO items from frontend edits when available, otherwise fall back to RFQ quote data
@@ -1000,8 +1000,8 @@ export const acknowledgePurchaseOrder = async (
 
     // Update purchase order
     purchaseOrder.status = PurchaseOrderStatus.ACKNOWLEDGED;
-    ((purchaseOrder.acknowledgedBy = req.user?._id as mongoose.Types.ObjectId),
-      (purchaseOrder.acknowledgedAt = new Date()));
+    purchaseOrder.acknowledgedBy = req.user?._id as any;
+    purchaseOrder.acknowledgedAt = new Date();
     await purchaseOrder.save();
 
     // Update requisition status

@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import User from "../models/user.model";
 import { uploadToS3 } from "../utils/fileUpload";
 import { db } from "../db";
-import { users, departments } from "../db/schema";
+import { users } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 // @desc    Get all users
@@ -17,16 +17,16 @@ export const getUsers = async (
     const allUsers = await db.query.users.findMany({
       with: {
         department: true,
-      }
+      },
     });
 
     res.status(200).json({
       success: true,
       count: allUsers.length,
-      data: allUsers.map(u => ({
+      data: allUsers.map((u) => ({
         _id: u.id,
         ...u,
-        department: u.department ? { _id: u.department.id, ...u.department } : null
+        department: u.department ? { _id: u.department.id, ...u.department } : null,
       })),
     });
   } catch (error) {
@@ -45,7 +45,7 @@ export const getUser = async (
   try {
     const user = await db.query.users.findFirst({
       where: eq(users.id, req.params.id as string),
-      with: { department: true }
+      with: { department: true },
     });
 
     if (!user) {
@@ -58,7 +58,7 @@ export const getUser = async (
       data: {
         _id: user.id,
         ...user,
-        department: user.department ? { _id: user.department.id, ...user.department } : null
+        department: user.department ? { _id: user.department.id, ...user.department } : null,
       },
     });
   } catch (error) {
@@ -75,36 +75,18 @@ export const createUser = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    // Dual write: Create in Mongo first to get ID
-    const mongoUser = await User.create(req.body);
-
-    // Create in PG
-    await db.insert(users).values({
-      id: mongoUser._id.toString(),
-      employeeId: mongoUser.employeeId,
-      firstName: mongoUser.firstName,
-      lastName: mongoUser.lastName,
-      email: mongoUser.email,
-      password: mongoUser.password || "",
-      role: mongoUser.role,
-      departmentId: mongoUser.department?.toString(),
-      designation: mongoUser.designation,
-      designationId: mongoUser.designationId,
-      profileImage: mongoUser.profileImage,
-      isActive: mongoUser.isActive,
-      isApproved: mongoUser.isApproved,
-    });
+    const newUser = await User.create(req.body);
 
     const user = await db.query.users.findFirst({
-      where: eq(users.id, mongoUser._id.toString()),
-      with: { department: true }
+      where: eq(users.id, newUser._id.toString()),
+      with: { department: true },
     });
 
     res.status(201).json({
       success: true,
       data: {
         _id: user?.id,
-        ...user
+        ...user,
       },
     });
   } catch (error) {
@@ -121,44 +103,26 @@ export const updateUser = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    // Update Mongo
-    const mongoUser = await User.findByIdAndUpdate(req.params.id, req.body, {
+    const updatedUser = await User.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
 
-    if (!mongoUser) {
+    if (!updatedUser) {
       res.status(404).json({ success: false, message: "User not found" });
       return;
     }
 
-    // Update PG
-    await db.update(users).set({
-      employeeId: mongoUser.employeeId,
-      firstName: mongoUser.firstName,
-      lastName: mongoUser.lastName,
-      email: mongoUser.email,
-      password: mongoUser.password || "",
-      role: mongoUser.role,
-      departmentId: mongoUser.department?.toString(),
-      designation: mongoUser.designation,
-      designationId: mongoUser.designationId,
-      profileImage: mongoUser.profileImage,
-      isActive: mongoUser.isActive,
-      isApproved: mongoUser.isApproved,
-      updatedAt: new Date()
-    }).where(eq(users.id, mongoUser._id.toString()));
-
     const user = await db.query.users.findFirst({
-      where: eq(users.id, mongoUser._id.toString()),
-      with: { department: true }
+      where: eq(users.id, req.params.id as string),
+      with: { department: true },
     });
 
     res.status(200).json({
       success: true,
       data: {
         _id: user?.id,
-        ...user
+        ...user,
       },
     });
   } catch (error) {
@@ -175,18 +139,14 @@ export const deleteUser = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    // Delete Mongo
-    const mongoUser = await User.findById(req.params.id);
+    const user = await User.findById(req.params.id);
 
-    if (!mongoUser) {
+    if (!user) {
       res.status(404).json({ success: false, message: "User not found" });
       return;
     }
 
-    await mongoUser.deleteOne();
-
-    // Delete PG
-    await db.delete(users).where(eq(users.id, req.params.id as string));
+    await user.deleteOne();
 
     res.status(200).json({
       success: true,
@@ -206,9 +166,7 @@ export const uploadProfileImage = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, req.params.id as string)
-    });
+    const user = await User.findById(req.params.id);
 
     if (!user) {
       res.status(404).json({ success: false, message: "User not found" });
@@ -222,9 +180,7 @@ export const uploadProfileImage = async (
 
     const uploadedFile = await uploadToS3(req.file, "profile-images");
 
-    // Dual Write
-    await db.update(users).set({ profileImage: uploadedFile.url }).where(eq(users.id, user.id));
-    await User.findByIdAndUpdate(user.id, { profileImage: uploadedFile.url });
+    await User.findByIdAndUpdate(user._id, { profileImage: uploadedFile.url });
 
     res.status(200).json({
       success: true,
@@ -234,4 +190,3 @@ export const uploadProfileImage = async (
     next(error);
   }
 };
-

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
+import mongoose from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import RFQ from "../models/rfq.model";
 import Requisition from "../models/requisition.model";
@@ -539,7 +539,7 @@ export const getRFQsByRequisition = async (
         .populate("deliveryLocation", "name address")
         .sort({ createdAt: -1 });
 
-      const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+      const formattedRFQs = rfqs.map((rfq: any) => formatRFQWithVendorIds(rfq));
 
       res.status(200).json({
         success: true,
@@ -1052,7 +1052,7 @@ export const getAllRFQs = async (
         )
         .sort({ createdAt: -1 });
 
-      const formattedRFQs = rfqs.map((rfq) => formatRFQWithVendorIds(rfq));
+      const formattedRFQs = rfqs.map((rfq: any) => formatRFQWithVendorIds(rfq));
 
       res.status(200).json({
         success: true,
@@ -1293,7 +1293,7 @@ export const uploadVendorQuote = async (
     if (items && Array.isArray(items)) {
       for (const quoteItem of items) {
         const rfqItem = rfq.items.find(
-          (item) => item.itemId.toString() === quoteItem.itemId,
+          (item: any) => item.itemId.toString() === quoteItem.itemId,
         );
 
         if (rfqItem) {

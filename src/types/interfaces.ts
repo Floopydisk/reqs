@@ -1,4 +1,39 @@
-import mongoose, { Document } from "mongoose";
+/* eslint-disable @typescript-eslint/no-namespace */
+export interface Document {
+  _id?: any;
+  id?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  [key: string]: any;
+}
+
+export namespace Types {
+  export type ObjectId = any;
+}
+
+export const Types = {
+  ObjectId: class ObjectId {
+    private id: string;
+    constructor(id?: any) {
+      this.id = id ? String(id) : "";
+    }
+    toString() {
+      return this.id;
+    }
+  },
+};
+
+export namespace mongoose {
+  export namespace Types {
+    export type ObjectId = any;
+  }
+  export type Document = any;
+}
+
+export const mongoose = {
+  Types,
+  Document: {} as any,
+};
 import {
   UserRole,
   RequisitionStatus,

@@ -1,129 +1,79 @@
-import mongoose, { Schema } from "mongoose";
+import { createPgModel } from "../db/pgModel";
 import { IUser } from "../types/interfaces";
-import { UserRole } from "../types/enums";
 import bcrypt from "bcryptjs";
-import { syncUserToPostgres } from "../utils/pgSync";
 
-const userSchema = new Schema<IUser>(
-  {
-    employeeId: {
-      type: String,
-      required: [true, "Employee ID is required"],
-      trim: true,
-    },
-    firstName: {
-      type: String,
-      required: [true, "First name is required"],
-      trim: true,
-    },
-    lastName: {
-      type: String,
-      required: [true, "Last name is required"],
-      trim: true,
-    },
-    email: {
-      type: String,
-      required: [true, "Email is required"],
-      trim: true,
-      lowercase: true,
-      match: [/^\S+@\S+\.\S+$/, "Please use a valid email address"],
-    },
-    password: {
-      type: String,
-      required: function (this: IUser) {
-        // @deprecated - VENDOR role removed
-        return false; // Password not required by default
-      },
-      minlength: [6, "Password must be at least 6 characters"],
-    },
-    role: {
-      type: String,
-      enum: Object.values(UserRole),
-      default: UserRole.STAFF,
-    },
-    department: {
-      type: Schema.Types.ObjectId,
-      ref: "Department",
-    },
-    designation: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    designationId: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    // @deprecated - vendor field removed
-    // vendor: {
-    //   type: Schema.Types.ObjectId,
-    //   ref: "Vendor",
-    // },
-    profileImage: {
-      type: String,
-    },
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-    isApproved: {
-      type: Boolean,
-      default: false,
-    },
-    // resetPasswordToken: { type: String },
-    // resetPasswordExpire: { type: Date },
+const BaseUser = createPgModel<IUser>("users");
+
+function attachUserMethods(doc: any) {
+  if (!doc) return;
+  doc.comparePassword = async function (enteredPassword: string): Promise<boolean> {
+    if (!this.password) return false;
+    return bcrypt.compare(enteredPassword, this.password);
+  };
+  doc.matchPassword = doc.comparePassword;
+}
+
+const User: any = {
+  ...BaseUser,
+
+  async create(data: any) {
+    if (data.password && !data.password.startsWith("$2")) {
+      const salt = await bcrypt.genSalt(10);
+      data.password = await bcrypt.hash(data.password, salt);
+    }
+    const doc = await BaseUser.create(data);
+    attachUserMethods(doc);
+    return doc;
   },
-  {
-    timestamps: true,
-  }
-);
 
-// Hash password before saving
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
+  find(filter: any = {}) {
+    const chain = BaseUser.find(filter);
+    const origThen = chain.then.bind(chain);
+    chain.then = (onfulfilled?: any, onrejected?: any) => {
+      return origThen((res: any) => {
+        if (Array.isArray(res)) {
+          res.forEach(attachUserMethods);
+        }
+        return onfulfilled ? onfulfilled(res) : res;
+      }, onrejected);
+    };
+    return chain;
+  },
 
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password as string, salt);
-    next();
-  } catch (error: any) {
-    next(error);
-  }
-});
+  findById(id: any) {
+    const chain = BaseUser.findById(id);
+    const origThen = chain.then.bind(chain);
+    chain.then = (onfulfilled?: any, onrejected?: any) => {
+      return origThen((res: any) => {
+        if (res) attachUserMethods(res);
+        return onfulfilled ? onfulfilled(res) : res;
+      }, onrejected);
+    };
+    return chain;
+  },
 
-// Method to compare password
-userSchema.methods.comparePassword = async function (
-  password: string
-): Promise<boolean> {
-  if (!this.password) return false;
-  return bcrypt.compare(password, this.password);
+  findOne(filter: any = {}) {
+    const chain = BaseUser.findOne(filter);
+    const origThen = chain.then.bind(chain);
+    chain.then = (onfulfilled?: any, onrejected?: any) => {
+      return origThen((res: any) => {
+        if (res) attachUserMethods(res);
+        return onfulfilled ? onfulfilled(res) : res;
+      }, onrejected);
+    };
+    return chain;
+  },
+
+  async findByIdAndUpdate(id: any, update: any, options: any = {}) {
+    const updates = update?.$set || update || {};
+    if (updates.password && !updates.password.startsWith("$2")) {
+      const salt = await bcrypt.genSalt(10);
+      updates.password = await bcrypt.hash(updates.password, salt);
+    }
+    const doc = await BaseUser.findByIdAndUpdate(id, update, options);
+    if (doc) attachUserMethods(doc);
+    return doc;
+  },
 };
 
-// Index for faster queries
-userSchema.index({ employeeId: 1 }, { unique: true });
-userSchema.index({ email: 1 }, { unique: true });
-userSchema.index({ department: 1 });
-userSchema.index({ role: 1 });
-
-userSchema.post("save", async function (doc, next) {
-  try {
-    await syncUserToPostgres(doc);
-  } catch (err) {
-    console.error("PG Sync error (user save):", err);
-  }
-  next();
-});
-
-userSchema.post("findOneAndUpdate", async function (doc, next) {
-  if (doc) {
-    try {
-      await syncUserToPostgres(doc);
-    } catch (err) {
-      console.error("PG Sync error (user findOneAndUpdate):", err);
-    }
-  }
-  next();
-});
-
-export default mongoose.model<IUser>("User", userSchema);
+export default User;

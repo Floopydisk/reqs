@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
+import mongoose from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";

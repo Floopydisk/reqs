@@ -1,46 +1,105 @@
-import mongoose from "mongoose";
+/* eslint-disable @typescript-eslint/no-empty-function, @typescript-eslint/no-namespace */
+import * as crypto from "crypto";
 
-/**
- * Safely converts a value to a MongoDB ObjectId.
- * If the value is already an ObjectId, returns it unchanged.
- * If the value is a string, converts it to an ObjectId.
- * Otherwise, returns null.
- */
-export const toObjectId = (value: any): mongoose.Types.ObjectId | null => {
-  if (!value) return null;
+export class ObjectId {
+  private _id: string;
 
-  if (value instanceof mongoose.Types.ObjectId) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    try {
-      return new mongoose.Types.ObjectId(value);
-    } catch (error) {
-      console.error(`Invalid ObjectId format: ${value}`);
-      return null;
+  constructor(id?: any) {
+    if (id instanceof ObjectId) {
+      this._id = id._id;
+    } else if (typeof id === "string" && id.length > 0) {
+      this._id = id;
+    } else if (id && typeof id === "object" && (id._id || id.id)) {
+      this._id = String(id._id || id.id);
+    } else {
+      this._id = crypto.randomBytes(12).toString("hex");
     }
   }
 
-  if (typeof value === "object" && value._id) {
-    return toObjectId(value._id);
+  toString(): string {
+    return this._id;
   }
 
-  return null;
+  toHexString(): string {
+    return this._id;
+  }
+
+  toJSON(): string {
+    return this._id;
+  }
+
+  equals(other: any): boolean {
+    if (!other) return false;
+    const str = other instanceof ObjectId ? other._id : String(other);
+    return this._id === str;
+  }
+
+  static isValid(id: any): boolean {
+    if (!id) return false;
+    const str = id instanceof ObjectId ? id._id : String(id);
+    return /^[0-9a-fA-F]{24}$/.test(str) || (typeof str === "string" && str.trim().length > 0);
+  }
+}
+
+export const generateId = (): string => crypto.randomBytes(12).toString("hex");
+
+/**
+ * Safely converts a value to an ObjectId compatible instance
+ */
+export const toObjectId = (value: any): any => {
+  if (!value) return null;
+  if (value instanceof ObjectId) return value;
+  if (typeof value === "string") return new ObjectId(value);
+  if (typeof value === "object" && (value._id || value.id)) {
+    return new ObjectId(value._id || value.id);
+  }
+  return new ObjectId(String(value));
 };
 
 /**
- * Returns the ObjectId from a user object or string
+ * Returns the ID from a user object or string
  * Useful for getting the user ID from req.user
  */
-export const getUserId = (user: any): mongoose.Types.ObjectId | null => {
+export const getUserId = (user: any): any => {
   if (!user) return null;
-
-  // Handle req.user with _id property
-  if (user._id) {
-    return toObjectId(user._id);
-  }
-
-  // In case the user is already an ID string or ObjectId
+  if (user._id) return toObjectId(user._id);
+  if (user.id) return toObjectId(user.id);
   return toObjectId(user);
 };
+
+export const isValidObjectId = (id: any): boolean => ObjectId.isValid(id);
+
+export const startSession = async () => ({
+  startTransaction: () => {},
+  commitTransaction: async () => {},
+  abortTransaction: async () => {},
+  endSession: () => {},
+});
+
+export const Types = {
+  ObjectId,
+};
+
+export interface ClientSession {
+  startTransaction: () => void;
+  commitTransaction: () => Promise<void>;
+  abortTransaction: () => Promise<void>;
+  endSession: () => void;
+}
+
+export namespace mongooseCompat {
+  export type ClientSession = any;
+  export namespace Types {
+    export type ObjectId = any;
+  }
+}
+
+export const mongooseCompat = {
+  Types,
+  isValidObjectId,
+  startSession,
+};
+
+export default mongooseCompat;
+
+

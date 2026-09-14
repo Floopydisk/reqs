@@ -1,29 +1,27 @@
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import { createPool } from '../db';
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/requisition-management';
-
-mongoose.set('bufferCommands', false); // CRITICAL: fail fast, don't hang
-
 export const connectDB = async (): Promise<void> => {
   try {
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 2000,
-    });
-    console.log('MongoDB connected successfully');
+    const pool = createPool();
+    const client = await pool.connect();
+    await client.query('SELECT 1');
+    client.release();
+    console.log('✅ PostgreSQL connected successfully (Primary Database)');
   } catch (error) {
-    console.warn('MongoDB connection warning:', error);
-    console.warn('[AI Studio] Continuing without MongoDB — fallback active');
+    console.error('❌ PostgreSQL connection error:', error);
+    throw error;
   }
 };
 
 export const disconnectDB = async (): Promise<void> => {
   try {
-    await mongoose.disconnect();
-    console.log('MongoDB disconnected successfully');
+    const pool = createPool();
+    await pool.end();
+    console.log('PostgreSQL pool closed successfully');
   } catch (error) {
-    console.error('MongoDB disconnection error:', error);
+    console.error('PostgreSQL disconnection error:', error);
   }
 };

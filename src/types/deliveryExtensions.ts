@@ -1,9 +1,9 @@
-import mongoose from "mongoose";
+import { Document } from "./interfaces";
 import { DeliveryStatus } from "../types/enums";
 
 // Extended interface for verification to include comments
 export interface IVerificationExtended {
-  verifiedBy: mongoose.Types.ObjectId;
+  verifiedBy: string | any;
   verifiedAt: Date;
   notes?: string;
   comments?: string; // Added comments field
@@ -16,7 +16,7 @@ export interface IRequesterVerification extends IVerificationExtended {
   images?: {
     name: string;
     url: string;
-    uploadedBy: mongoose.Types.ObjectId;
+    uploadedBy: string | any;
     uploadedAt: Date;
   }[];
 }
@@ -28,14 +28,14 @@ export interface IHodApproval extends IVerificationExtended {
 
 // Interface for inventory confirmation
 export interface IInventoryConfirmation {
-  confirmedBy: mongoose.Types.ObjectId;
+  confirmedBy: string | any;
   confirmedAt: Date;
   notes: string;
 }
 
 // Interface for department confirmation
 export interface IDepartmentConfirmation {
-  confirmedBy: mongoose.Types.ObjectId;
+  confirmedBy: string | any;
   confirmedAt: Date;
   notes: string;
 }
@@ -47,7 +47,7 @@ export interface IDeliveryExtended {
   requesterVerification?: IRequesterVerification;
   hodApproval?: IHodApproval;
   pmNotification?: {
-    notifiedBy: mongoose.Types.ObjectId;
+    notifiedBy: string | any;
     notifiedAt: Date;
     message: string;
     expectedDeliveryDate: Date;
@@ -57,8 +57,9 @@ export interface IDeliveryExtended {
 }
 
 // Export types for use in the controllers
-export type DeliveryWithExtensions = mongoose.Document &
+export type DeliveryWithExtensions = Document &
   IDeliveryExtended & {
-    _id: mongoose.Types.ObjectId;
+    _id: string | any;
     id: string;
   };
+

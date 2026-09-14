@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
+import { generateId } from "../utils/objectIdHelper";
 import Vendor from "../models/vendor.model";
 import RFQ from "../models/rfq.model";
 import PurchaseOrder from "../models/purchaseOrder.model";
@@ -216,7 +216,7 @@ export const createVendor = async (
     }
 
     // Check if vendor with same email already exists
-    const id = new mongoose.Types.ObjectId().toString();
+    const id = generateId();
     try {
       const existingVendor = await Vendor.findOne({ email: req.body.email });
 
@@ -314,10 +314,11 @@ export const updateVendor = async (
         }
 
         // Update vendor
-        vendor = await Vendor.findByIdAndUpdate(id, req.body, {
+        await Vendor.findByIdAndUpdate(id, req.body, {
           new: true,
           runValidators: true,
-        }).populate("categories", "name");
+        });
+        vendor = await Vendor.findById(id).populate("categories", "name");
 
         res.status(200).json({
           success: true,
@@ -804,11 +805,11 @@ export const getVendorPerformance = async (
 
     const bidPerformance = {
       total: rfqs.length,
-      selected: rfqs.filter((rfq) => rfq.status === "completed").length,
+      selected: rfqs.filter((rfq: any) => rfq.status === "completed").length,
       shortlisted: rfqs.filter(
-        (rfq) => rfq.status === "issued" || rfq.status === "quoteReceived",
+        (rfq: any) => rfq.status === "issued" || rfq.status === "quoteReceived",
       ).length,
-      rejected: rfqs.filter((rfq) => rfq.status === "cancelled").length,
+      rejected: rfqs.filter((rfq: any) => rfq.status === "cancelled").length,
       winRate: 0,
     };
 
@@ -825,9 +826,9 @@ export const getVendorPerformance = async (
 
     const purchaseOrderPerformance = {
       total: purchaseOrders.length,
-      fulfilled: purchaseOrders.filter((po) => po.status === "fulfilled")
+      fulfilled: purchaseOrders.filter((po: any) => po.status === "fulfilled")
         .length,
-      cancelled: purchaseOrders.filter((po) => po.status === "cancelled")
+      cancelled: purchaseOrders.filter((po: any) => po.status === "cancelled")
         .length,
       fulfillmentRate: 0,
     };
@@ -848,7 +849,7 @@ export const getVendorPerformance = async (
     const deliveryPerformance = {
       total: deliveries.length,
       onTime: deliveries.filter(
-        (d) =>
+        (d: any) =>
           d.status === "completed" ||
           d.status === "inventoryVerified" ||
           d.status === "departmentVerified",
@@ -864,7 +865,7 @@ export const getVendorPerformance = async (
 
     // Business metrics
     const totalValue = purchaseOrders.reduce(
-      (sum, po) => sum + (po.totalAmount || 0),
+      (sum: number, po: any) => sum + (po.totalAmount || 0),
       0,
     );
 

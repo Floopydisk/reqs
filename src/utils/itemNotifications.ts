@@ -354,7 +354,7 @@ export const notifyBulkItemAction = async (
       itemIds.includes(i._id?.toString())
     );
 
-    const itemNames = items.map((i) => i.itemName).join(", ");
+    const itemNames = items.map((i: any) => i.itemName).join(", ");
 
     // Notify requester
     await Notification.create({

@@ -1,8 +1,8 @@
 import { notifyUsers } from "./notification";
 import User from "../models/user.model";
 import Vendor from "../models/vendor.model";
+import Department from "../models/department.model";
 import { UserRole } from "../types/enums";
-import mongoose from "mongoose";
 
 /**
  * Helper to get relevant stakeholders for a requisition
@@ -30,7 +30,6 @@ export async function getRequisitionStakeholders(requisition: any) {
 
   // Get department head
   if (requisition.department) {
-    const Department = mongoose.model("Department");
     const dept = await Department.findById(requisition.department);
     if (dept && dept.head) {
       stakeholders.departmentHead =
@@ -45,14 +44,14 @@ export async function getRequisitionStakeholders(requisition: any) {
     "_id"
   );
   stakeholders.procurementManagers = pms
-    .map((pm) => pm._id?.toString() || "")
-    .filter((id) => id !== "");
+    .map((pm: any) => pm._id?.toString() || "")
+    .filter((id: string) => id !== "");
 
   // Get all HHRAs
   const hhras = await User.find({ role: UserRole.HHRA }).select("_id");
   stakeholders.hhras = hhras
-    .map((hhra) => hhra._id?.toString() || "")
-    .filter((id) => id !== "");
+    .map((hhra: any) => hhra._id?.toString() || "")
+    .filter((id: string) => id !== "");
 
   // Get selected vendors if any
   if (requisition.selectedVendors && requisition.selectedVendors.length > 0) {

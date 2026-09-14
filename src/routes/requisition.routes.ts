@@ -989,9 +989,20 @@ router.get("/:id/history", getRequisitionHistory);
  *               reason:
  *                 type: string
  *                 example: No longer needed
- *             responses:
+ *     responses:
  *       200:
  *         description: Requisition cancelled
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Requisition cancelled successfully
  *       400:
  *         description: Cannot cancel requisition in its current status
  *       401:

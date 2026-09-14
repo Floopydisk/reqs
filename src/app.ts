@@ -3,7 +3,6 @@ import cors, { CorsOptions } from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-// import mongoSanitize from "express-mongo-sanitize";
 import hpp from "hpp";
 import cookieParser from "cookie-parser";
 import compression from "compression";
@@ -85,9 +84,6 @@ const limiter = rateLimit({
   message: "Too many requests from this IP, please try again after 15 minutes",
 });
 app.use("/api", limiter);
-
-// Data sanitization against NoSQL query injection
-// app.use(mongoSanitize());
 
 // Prevent parameter pollution
 app.use(
@@ -217,23 +213,6 @@ app.get("/health", (req: Request, res: Response) => {
     environment: process.env.NODE_ENV,
     timestamp: new Date().toISOString(),
   });
-});
-
-// Database offline error middleware (handles Mongoose disconnection gracefully)
-app.use((err: any, req: Request, res: Response, next: any) => {
-  if (
-    err?.name === "MongooseError" ||
-    err?.name === "MongoNetworkError" ||
-    err?.name === "MongoServerSelectionError" ||
-    (err?.message && (err.message.includes("buffering timed out") || err.message.includes("not connected") || err.message.includes("Topology is closed")))
-  ) {
-    console.warn("[AI Studio] Database offline — returning fallback response");
-    if (req.method === "GET") {
-      return res.status(200).json(req.path.endsWith("s") || req.path.endsWith("s/") ? [] : {});
-    }
-    return res.status(503).json({ error: "Service temporarily unavailable (database offline)" });
-  }
-  next(err);
 });
 
 // 404 handler for undefined routes (Express 5 compatible)

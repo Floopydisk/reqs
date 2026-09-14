@@ -5,7 +5,7 @@ import { UserRole } from "../types/enums";
 import { db } from "../db";
 import { vendorCategories } from "../db/schema";
 import { eq, ilike, or } from "drizzle-orm";
-import mongoose from "mongoose";
+import { generateId } from "../utils/objectIdHelper";
 
 // @desc    Get all vendor categories
 // @route   GET /api/vendor-categories
@@ -200,7 +200,7 @@ export const createVendorCategory = async (
       return;
     }
 
-    const id = new mongoose.Types.ObjectId().toString();
+    const id = generateId();
     const newCat = {
       id,
       name: rawName,
@@ -436,7 +436,7 @@ export const getVendorsByCategory = async (
       req.user!.role !== UserRole.ADMIN &&
       req.user!.role !== UserRole.PROCUREMENT_MANAGER
     ) {
-      vendorData = vendors.map((vendor) => ({
+      vendorData = vendors.map((vendor: any) => ({
         _id: vendor._id,
         name: vendor.name,
         contactPerson: vendor.contactPerson,

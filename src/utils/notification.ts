@@ -1,8 +1,10 @@
 import { EventEmitter } from "events";
-import mongoose from "mongoose";
 import User from "../models/user.model";
 import Vendor from "../models/vendor.model";
 import Notification from "../models/notification.model";
+import Delivery from "../models/delivery.model";
+import PurchaseOrder from "../models/purchaseOrder.model";
+import Requisition from "../models/requisition.model";
 import emailService from "./emailService";
 import { toObjectId } from "./objectIdHelper";
 
@@ -297,7 +299,6 @@ export async function notifyUsers(payload: NotificationPayload): Promise<void> {
     // Get actor information (could be User or Vendor)
     let actor: any;
     if (actorModel === "Vendor") {
-      const Vendor = mongoose.model("Vendor");
       actor = await Vendor.findById(payload.actorId)
         .select("name contactPerson email")
         .lean();
@@ -320,13 +321,12 @@ export async function notifyUsers(payload: NotificationPayload): Promise<void> {
         .select("firstName lastName email")
         .lean();
       emailRecipients.push(
-        ...users.filter((u) => !!u.email).map((u) => u.email as string)
+        ...users.filter((u: any) => !!u.email).map((u: any) => u.email as string)
       );
     }
 
     // Get vendor emails
     if (payload.targetVendorIds?.length) {
-      const Vendor = mongoose.model("Vendor");
       const vendors = await Vendor.find({
         _id: { $in: payload.targetVendorIds },
       })
@@ -388,12 +388,6 @@ export async function notifyAll(
  */
 export async function sendDeliveryReminders(deliveryId: string): Promise<void> {
   try {
-    const Delivery = mongoose.model("Delivery");
-    const PurchaseOrder = mongoose.model("PurchaseOrder");
-    const Requisition = mongoose.model("Requisition");
-    const User = mongoose.model("User");
-    const Vendor = mongoose.model("Vendor");
-
     const delivery = await Delivery.findById(deliveryId);
     if (!delivery) {
       console.error(
@@ -488,11 +482,6 @@ export async function sendLateDeliveryAlerts(
   deliveryId: string
 ): Promise<void> {
   try {
-    const Delivery = mongoose.model("Delivery");
-    const PurchaseOrder = mongoose.model("PurchaseOrder");
-    const Requisition = mongoose.model("Requisition");
-    const User = mongoose.model("User");
-
     const delivery = await Delivery.findById(deliveryId);
     if (!delivery) {
       console.error(
@@ -584,10 +573,6 @@ export async function sendPaymentStatusNotification(
   actorId: string
 ): Promise<void> {
   try {
-    const PurchaseOrder = mongoose.model("PurchaseOrder");
-    const Requisition = mongoose.model("Requisition");
-    const User = mongoose.model("User");
-
     const purchaseOrder = await PurchaseOrder.findById(purchaseOrderId);
     if (!purchaseOrder) {
       console.error(
