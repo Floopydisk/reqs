@@ -42,6 +42,9 @@ import locationRoutes from "./routes/location.routes";
 // Create Express app
 const app = express();
 
+// Trust reverse proxy (e.g. Cloud Run, Nginx) for accurate client IP resolution
+app.set("trust proxy", 1);
+
 // Set up Swagger documentation
 setupSwagger(app);
 
@@ -79,9 +82,12 @@ if (process.env.NODE_ENV === "development") {
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 10000, // 15 minutes
-  max: 1000, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // limit each IP to 1000 requests per windowMs
   message: "Too many requests from this IP, please try again after 15 minutes",
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
 });
 app.use("/api", limiter);
 

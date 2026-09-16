@@ -76,8 +76,8 @@ const loginUserLocally = (
     success: true,
     data: {
       user: {
-        id: user?._id,
-        employeeId: userId,
+        id: user?._id || user?.id,
+        employeeId: user?.employeeId || userId,
         firstName: user?.firstName,
         lastName: user?.lastName,
         email: user?.email,
@@ -103,7 +103,6 @@ export const login = async (
 ): Promise<void> => {
   try {
     const { userId, bypass } = req.body;
-    // const bypass = "iGNOre";
 
     // Validate required fields
     if (!userId) {
@@ -114,13 +113,15 @@ export const login = async (
       return;
     }
 
+    const normalizedUserId = String(userId).trim();
+
     // Helper to attempt database fallback authentication
     const tryDatabaseFallback = async (): Promise<boolean> => {
       try {
-        console.log(`Intranet service failed/unavailable. Attempting database auth fallback for userId: ${userId}`);
+        console.log(`Intranet service failed/unavailable. Attempting database auth fallback for userId: ${normalizedUserId}`);
         
         const user = await db.query.users.findFirst({
-          where: eq(users.employeeId, userId),
+          where: eq(users.employeeId, normalizedUserId),
           with: { department: true }
         });
 
@@ -133,7 +134,7 @@ export const login = async (
             return true;
           }
 
-          loginUserLocally(user, userId, res, true);
+          loginUserLocally(user, normalizedUserId, res, true);
           return true;
         }
       } catch (dbError) {
@@ -167,22 +168,26 @@ export const login = async (
     });
 
     const dateString = `${day}${month}${year}${hour}`;
-    console.log(dateString);
 
-    // Create the authentication string: dateString + userId
-    const authString = `${dateString}${userId}`;
+    // Create the authentication string: dateString + normalizedUserId
+    const authString = `${dateString}${normalizedUserId}`;
 
     // Generate MD5 hash for authentication and bypass string
     const authStringHash = crypto
       .createHash("md5")
       .update(authString)
       .digest("hex");
-    
-    if (bypass === "iGNOre") {
-        if (await tryDatabaseFallback()) return;
-    }
-    const bypassHash = crypto.createHash("md5").update(bypass).digest("hex");
 
+    // Intranet salt / bypass key (defaults to environment variable or "iGNOre")
+    const bypassToken =
+      (typeof bypass === "string" && bypass.trim()) ||
+      process.env.INTRANET_BYPASS ||
+      "iGNOre";
+
+    const bypassHash = crypto
+      .createHash("md5")
+      .update(bypassToken)
+      .digest("hex");
 
     // Generate MD5 hash for userpass
     const md5Hash = `${authStringHash}${bypassHash}`;
@@ -190,7 +195,10 @@ export const login = async (
     // Prepare intranet URL
     const intranetUrl =
       process.env.INTRANET_AUTH_URL || "https://daystarng.org/";
-    const fullUrl = `${intranetUrl}intranet2_09052025/Api/getstaff_dets?user_id=${userId}&userpass=${md5Hash}`;
+    const fullUrl = `${intranetUrl}intranet2_09052025/Api/getstaff_dets?user_id=${encodeURIComponent(normalizedUserId)}&userpass=${md5Hash}`;
+
+    let intranetUser: IntranetUserResponse | null = null;
+    let intranetFailed = false;
 
     try {
       // Call intranet authentication service
@@ -201,35 +209,26 @@ export const login = async (
           "User-Agent": "Requisition-System/1.0",
         },
       });
-      console.log("response:", response);
 
-      if (response.status !== 200 || !response.data) {
-        if (await tryDatabaseFallback()) return;
-        res.status(401).json({
-          success: false,
-          message: "Invalid credentials or authentication service unavailable",
-        });
-        return;
+      if (response.status === 200 && response.data && typeof response.data === "object") {
+        intranetUser = response.data as IntranetUserResponse;
+      } else {
+        intranetFailed = true;
       }
+    } catch (intranetReqError: any) {
+      console.warn("Intranet authentication request error:", intranetReqError.message || intranetReqError);
+      intranetFailed = true;
+    }
 
-      const intranetUser: IntranetUserResponse = response.data;
-
-      // Validate intranet response structure
-      if (
-        !intranetUser.user_id ||
-        !intranetUser.first_name ||
-        !intranetUser.last_name
-      ) {
-        if (await tryDatabaseFallback()) return;
-        res.status(401).json({
-          success: false,
-          message: "Invalid response from authentication service",
-        });
-        return;
-      }
-
+    // If intranet returned valid user data, proceed with intranet login
+    if (
+      intranetUser &&
+      intranetUser.user_id &&
+      intranetUser.first_name &&
+      intranetUser.last_name
+    ) {
       // Verify that the returned user_id matches the requested userId
-      if (intranetUser.user_id !== userId) {
+      if (String(intranetUser.user_id).trim() !== normalizedUserId) {
         res.status(401).json({
           success: false,
           message: "Authentication failed - user ID mismatch",
@@ -266,50 +265,23 @@ export const login = async (
         user = await updateUserFromIntranetData(user, mappedUserData);
       }
 
-      // Complete login locally
-      loginUserLocally(user, userId, res, false);
-
-    } catch (intranetError) {
-      console.error("Intranet authentication error:", intranetError);
-
-      // Only attempt database fallback if the error indicates the server is down or timed out.
-      const isAuthServerDown =
-        !axios.isAxiosError(intranetError) ||
-        !intranetError.response ||
-        (intranetError.response.status >= 500 && intranetError.response.status <= 599);
-
-      if (isAuthServerDown) {
-        if (await tryDatabaseFallback()) return;
-      }
-
-      if (axios.isAxiosError(intranetError)) {
-        if (
-          intranetError.response?.status === 401 ||
-          intranetError.response?.status === 403
-        ) {
-          res.status(401).json({
-            success: false,
-            message: "Invalid user ID or authentication failed",
-          });
-          return;
-        }
-
-        if (intranetError.response?.status === 404) {
-          res.status(401).json({
-            success: false,
-            message: "User not found in authentication system",
-          });
-          return;
-        }
-      }
-
-      res.status(503).json({
-        success: false,
-        message:
-          "Authentication service temporarily unavailable. Please try again later.",
-      });
+      // Complete login locally with Intranet (not fallback)
+      loginUserLocally(user, normalizedUserId, res, false);
       return;
     }
+
+    // If intranet failed or returned invalid response, attempt database fallback
+    if (intranetFailed || !intranetUser) {
+      if (await tryDatabaseFallback()) {
+        return;
+      }
+    }
+
+    res.status(401).json({
+      success: false,
+      message: "Invalid credentials or authentication service unavailable",
+    });
+    return;
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({
@@ -700,11 +672,16 @@ async function updateUserFromIntranetData(
   // Update user data
   user.firstName = mappedData.firstName;
   user.lastName = mappedData.lastName;
-  user.email = mappedData.email;
+  if (!user.email) {
+    user.email = mappedData.email;
+  }
   user.department = department._id;
   user.designation = mappedData.designation;
   user.designationId = mappedData.designationId;
-  user.role = mappedData.role;
+  // Preserve elevated administrative roles if already granted in this system
+  if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+    user.role = mappedData.role;
+  }
   user.lastLogin = new Date();
 
   // Automatically assign department head if the user's role is DEPARTMENT_HEAD
