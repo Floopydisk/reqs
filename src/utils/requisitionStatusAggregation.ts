@@ -129,6 +129,22 @@ export function aggregateRequisitionStatus(
     statusCounts.departmentApproved + statusCounts.hrApproved;
 
   if (activeItems > 0 && approvedCount === activeItems) {
+    // If requisition has already reached HoF approval or later PM stage, preserve that status
+    const isAlreadyHofApproved =
+      requisition.status === RequisitionStatus.HOF_APPROVED ||
+      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW ||
+      requisition.approvals?.some(
+        (a: any) =>
+          (a.stage === "Finance" || a.stage === "HoF" || a.approverRole === "hof") &&
+          a.status === "approved"
+      );
+
+    if (isAlreadyHofApproved) {
+      return requisition.status === RequisitionStatus.PROCUREMENT_REVIEW
+        ? RequisitionStatus.PROCUREMENT_REVIEW
+        : RequisitionStatus.HOF_APPROVED;
+    }
+
     if (hasWorkingTools) {
       const allWorkingToolsApproved = items
         .filter(
@@ -138,7 +154,7 @@ export function aggregateRequisitionStatus(
         .every((item: any) => item.status === ItemStatus.HR_APPROVED);
 
       if (allWorkingToolsApproved) {
-        return RequisitionStatus.DEPARTMENT_APPROVED;
+        return RequisitionStatus.HR_APPROVED;
       }
       return RequisitionStatus.HR_REVIEW;
     }

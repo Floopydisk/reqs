@@ -10,6 +10,8 @@ import {
   departmentApproval,
   departmentRejection,
   hhraApproval,
+  hofApproval,
+  hofRejectRequisition,
   uploadAttachment,
   getRequisitionHistory,
   cancelRequisition,
@@ -227,7 +229,7 @@ router.get("/:id", getRequisition);
  * /api/requisitions:
  *   post:
  *     summary: Create requisition
- *     description: Create a new requisition
+ *     description: Create a new requisition. If the requester is the Head of Department (HoD) himself, the request is automatically approved at the department level. If the requisition contains working tools, it proceeds to HHRA approval -> Head of Finance (HoF) approval -> Procurement Manager (PM) level. If it does not contain working tools, it moves directly from department approval to HoF approval -> PM level.
  *     tags: [Requisitions]
  *     security:
  *       - bearerAuth: []
@@ -708,7 +710,7 @@ router.put(
  * /api/requisitions/{id}/department-approval:
  *   put:
  *     summary: Department head approval
- *     description: Approve or reject a requisition as department head
+ *     description: Approve or reject a requisition as department head. If approved and requisition contains work tools, it moves to HR_REVIEW for HHRA approval. If non-work tools, it moves to DEPARTMENT_APPROVED awaiting Head of Finance (HoF) approval.
  *     tags: [Requisitions, Requisitions - Finance Approval]
  *     security:
  *       - bearerAuth: []
@@ -890,6 +892,179 @@ router.put(
       .withMessage("Payment amount must be a number"),
   ]),
   hhraApproval,
+);
+
+/**
+ * @swagger
+ * /api/requisitions/{id}/hof-approval:
+ *   put:
+ *     summary: Head of Finance approval for requisition
+ *     description: Final requisition approval before moving to Procurement Manager level (RFQ/PO generation). If requisition contains work tools, it must be approved by HHRA first. If non-work tools, it must be approved by Department Head first.
+ *     tags: [Requisitions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Requisition ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [approved, rejected]
+ *                 default: approved
+ *                 description: Approval decision
+ *               comments:
+ *                 type: string
+ *                 description: Approval or rejection reason / comments
+ *                 example: Budget verified and approved for procurement
+ *     responses:
+ *       200:
+ *         description: Requisition approved or rejected by Head of Finance
+ *       400:
+ *         description: Invalid request or prerequisite approvals missing
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Not authorized (Head of Finance or Admin only)
+ *       404:
+ *         description: Requisition not found
+ */
+router.put(
+  "/:id/hof-approval",
+  authorize(
+    UserRole.HEAD_OF_FINANCE,
+    UserRole.FINANCE_MANAGER,
+    UserRole.DEPARTMENT_HEAD,
+    UserRole.ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validate([
+    body("status")
+      .optional()
+      .isIn(["approved", "rejected"])
+      .withMessage("Status must be either approved or rejected"),
+  ]),
+  hofApproval,
+);
+
+/**
+ * @swagger
+ * /api/requisitions/{id}/finance-approval:
+ *   put:
+ *     summary: Finance approval for requisition (alias for hof-approval)
+ *     description: Alias for /api/requisitions/{id}/hof-approval
+ *     tags: [Requisitions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Requisition ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [approved, rejected]
+ *                 default: approved
+ *               comments:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Requisition approved or rejected by Finance
+ *       400:
+ *         description: Invalid request or prerequisite approvals missing
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Requisition not found
+ */
+router.put(
+  "/:id/finance-approval",
+  authorize(
+    UserRole.HEAD_OF_FINANCE,
+    UserRole.FINANCE_MANAGER,
+    UserRole.DEPARTMENT_HEAD,
+    UserRole.ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validate([
+    body("status")
+      .optional()
+      .isIn(["approved", "rejected"])
+      .withMessage("Status must be either approved or rejected"),
+  ]),
+  hofApproval,
+);
+
+/**
+ * @swagger
+ * /api/requisitions/{id}/hof-reject:
+ *   put:
+ *     summary: Head of Finance reject requisition
+ *     description: Head of Finance rejects the requisition with required comments
+ *     tags: [Requisitions]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Requisition ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - comments
+ *             properties:
+ *               comments:
+ *                 type: string
+ *                 description: Rejection reason
+ *                 example: Budget allocation exceeded for this category
+ *     responses:
+ *       200:
+ *         description: Requisition rejected by Head of Finance
+ *       400:
+ *         description: Validation error
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Requisition not found
+ */
+router.put(
+  "/:id/hof-reject",
+  authorize(
+    UserRole.HEAD_OF_FINANCE,
+    UserRole.FINANCE_MANAGER,
+    UserRole.DEPARTMENT_HEAD,
+    UserRole.ADMIN,
+    UserRole.SUPER_ADMIN,
+  ),
+  validate([
+    body("comments").notEmpty().withMessage("Rejection comments are required"),
+  ]),
+  hofRejectRequisition,
 );
 
 /**

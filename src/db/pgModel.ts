@@ -613,6 +613,7 @@ async function loadRequisitionChildren(reqDoc: any) {
     ...a,
     _id: a.id,
     approver: a.approverId,
+    approverRole: (a.stage === "Finance" || a.stage === "HoF") ? "hof" : ((a.stage === "HR" || a.stage === "HHRA") ? "hhr" : "hod"),
   }));
 }
 

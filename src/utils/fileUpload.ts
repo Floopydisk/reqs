@@ -16,14 +16,29 @@ type S3RuntimeConfig = {
 
 let s3Client: S3Client | null = null;
 
-const getS3Config = (): S3RuntimeConfig => {
-  const region = process.env.AWS_S3_REGION;
-  const bucket = process.env.AWS_S3_BUCKET;
-  const publicBaseUrl = process.env.AWS_S3_PUBLIC_BASE_URL?.replace(/\/+$/, "");
+const cleanEnv = (val?: string): string | undefined => {
+  if (!val) return undefined;
+  const trimmed = val.trim();
+  return trimmed.replace(/^["']|["']$/g, "").trim();
+};
 
-  if (!region || !bucket) {
-    throw new Error("AWS_S3_REGION and AWS_S3_BUCKET must be configured");
+const getS3Config = (): S3RuntimeConfig => {
+  const region =
+    cleanEnv(process.env.AWS_S3_REGION) ||
+    cleanEnv(process.env.AWS_REGION) ||
+    cleanEnv(process.env.AWS_DEFAULT_REGION) ||
+    "us-east-1";
+  const bucket =
+    cleanEnv(process.env.AWS_S3_BUCKET) ||
+    cleanEnv(process.env.AWS_BUCKET);
+  const publicBaseUrl = cleanEnv(process.env.AWS_S3_PUBLIC_BASE_URL)?.replace(/\/+$/, "");
+
+  if (!bucket) {
+    throw new Error("AWS_S3_BUCKET must be configured");
   }
+
+  if (!process.env.AWS_REGION) process.env.AWS_REGION = region;
+  if (!process.env.AWS_DEFAULT_REGION) process.env.AWS_DEFAULT_REGION = region;
 
   return { region, bucket, publicBaseUrl };
 };
@@ -34,13 +49,20 @@ const getS3Client = (): S3Client => {
   }
 
   const { region } = getS3Config();
+  const rawAccessKey =
+    cleanEnv(process.env.AWS_ACCESS_KEY_ID) ||
+    cleanEnv(process.env.AWS_ACCESS_KEY);
+  const rawSecretKey =
+    cleanEnv(process.env.AWS_SECRET_ACCESS_KEY) ||
+    cleanEnv(process.env.AWS_SECRET_KEY);
+
   s3Client = new S3Client({
     region,
     credentials:
-      process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+      rawAccessKey && rawSecretKey
         ? {
-            accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            accessKeyId: rawAccessKey,
+            secretAccessKey: rawSecretKey,
           }
         : undefined,
   });
@@ -73,16 +95,30 @@ export const uploadToS3 = async (
   const baseName = path.basename(file.originalname || "file", extension);
   const safeName = `${baseName.replace(/[^a-zA-Z0-9-_]/g, "_")}${extension}`;
   const key = `${folder.replace(/^\/+|\/+$/g, "")}/${Date.now()}-${uuidv4()}-${safeName}`;
-  const { bucket } = getS3Config();
+  const { bucket, region } = getS3Config();
 
-  await getS3Client().send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype || "application/octet-stream",
-    }),
-  );
+  try {
+    await getS3Client().send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype || "application/octet-stream",
+      }),
+    );
+  } catch (error: any) {
+    console.error("AWS S3 PutObject failed:", {
+      bucket,
+      region,
+      key,
+      errorName: error?.name,
+      errorMessage: error?.message,
+      accessKeyIdPrefix: process.env.AWS_ACCESS_KEY_ID
+        ? `${process.env.AWS_ACCESS_KEY_ID.substring(0, 4)}...`
+        : "none",
+    });
+    throw error;
+  }
 
   return {
     name: file.originalname,
