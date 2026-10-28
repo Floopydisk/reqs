@@ -426,11 +426,11 @@ export default function PurchaseOrderDetails() {
         setPurchaseOrder((prev) =>
           prev
             ? {
-                ...prev,
-                status:
-                  data.data?.status ??
-                  (approvalType === "hof" ? "hofApproved" : "approved"),
-              }
+              ...prev,
+              status:
+                data.data?.status ??
+                (approvalType === "hof" ? "hofApproved" : "approved"),
+            }
             : prev,
         );
       } else {
@@ -629,8 +629,7 @@ export default function PurchaseOrderDetails() {
               <p>
                 <span className="font-semibold">Created By:</span>{" "}
                 {purchaseOrder.createdBy
-                  ? `${purchaseOrder.createdBy.firstName || ""} ${
-                      purchaseOrder.createdBy.lastName || ""
+                  ? `${purchaseOrder.createdBy.firstName || ""} ${purchaseOrder.createdBy.lastName || ""
                     }`.trim()
                   : "N/A"}
               </p>
@@ -689,8 +688,7 @@ export default function PurchaseOrderDetails() {
               <p>
                 <span className="font-semibold">Delivery Contact:</span>{" "}
                 {purchaseOrder.deliveryContact
-                  ? `${purchaseOrder.deliveryContact.firstName || ""} ${
-                      purchaseOrder.deliveryContact.lastName || ""
+                  ? `${purchaseOrder.deliveryContact.firstName || ""} ${purchaseOrder.deliveryContact.lastName || ""
                     }`.trim()
                   : "N/A"}
               </p>
@@ -731,51 +729,51 @@ export default function PurchaseOrderDetails() {
               {((purchaseOrder.vendorQuotes && purchaseOrder.vendorQuotes.length > 0) ||
                 (purchaseOrder.attachments && purchaseOrder.attachments.length > 0) ||
                 purchaseOrder.quoteUrl) && (
-                <div className="mt-3 pt-3 border-t border-gray-100">
-                  <span className="font-semibold block text-sm mb-2 text-gray-900">
-                    Uploaded Vendor Quote(s) & Attachments:
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    {purchaseOrder.quoteUrl &&
-                      !purchaseOrder.vendorQuotes?.length &&
-                      !purchaseOrder.attachments?.length && (
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    <span className="font-semibold block text-sm mb-2 text-gray-900">
+                      Uploaded Vendor Quote(s) & Attachments:
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {purchaseOrder.quoteUrl &&
+                        !purchaseOrder.vendorQuotes?.length &&
+                        !purchaseOrder.attachments?.length && (
+                          <a
+                            href={purchaseOrder.quoteUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-800 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            Vendor Quote
+                          </a>
+                        )}
+                      {/* {purchaseOrder.vendorQuotes?.map((quote: any, idx: number) => (
                         <a
-                          href={purchaseOrder.quoteUrl}
+                          key={`vq-${idx}`}
+                          href={quote.url}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-800 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 transition-colors"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          Vendor Quote
+                          {quote.filename || `Quote ${idx + 1}`}
                         </a>
-                      )}
-                    {purchaseOrder.vendorQuotes?.map((quote: any, idx: number) => (
-                      <a
-                        key={`vq-${idx}`}
-                        href={quote.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-800 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 transition-colors"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        {quote.filename || `Quote ${idx + 1}`}
-                      </a>
-                    ))}
-                    {purchaseOrder.attachments?.map((att: any, idx: number) => (
-                      <a
-                        key={`att-${idx}`}
-                        href={att.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 text-xs font-medium rounded border border-emerald-200 hover:bg-emerald-100 transition-colors"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        {att.name || att.filename || `Attachment ${idx + 1}`}
-                      </a>
-                    ))}
+                      ))} */}
+                      {purchaseOrder.attachments?.map((att: any, idx: number) => (
+                        <a
+                          key={`att-${idx}`}
+                          href={att.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 text-xs font-medium rounded border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          {att.name || att.filename || `Attachment ${idx + 1}`}
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
             </div>
           </div>
         </div>
@@ -1196,7 +1194,7 @@ export default function PurchaseOrderDetails() {
                       <td className="py-3 text-gray-700">
                         {formatMoney(
                           editedItems[index].quantity *
-                            editedItems[index].unitPrice,
+                          editedItems[index].unitPrice,
                         )}
                       </td>
                     </tr>
