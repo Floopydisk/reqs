@@ -106,6 +106,7 @@ export const requisitionApprovals = pgTable('requisition_approvals', {
   requisitionId: varchar('requisition_id', { length: 24 }).notNull(),
   stage: varchar('stage', { length: 100 }).notNull(),
   approverId: varchar('approver_id', { length: 24 }).notNull(),
+  approverName: varchar('approver_name', { length: 255 }),
   status: varchar('status', { length: 50 }).notNull(),
   comments: text('comments'),
   timestamp: timestamp('timestamp').defaultNow().notNull(),
@@ -123,6 +124,7 @@ export const requisitionItems = pgTable('requisition_items', {
   UOM: varchar('uom', { length: 50 }),
   recommendedVendorId: varchar('recommended_vendor_id', { length: 24 }),
   isWorkTool: boolean('is_work_tool').default(false).notNull(),
+  workToolSubcategory: varchar('work_tool_subcategory', { length: 100 }),
   status: varchar('status', { length: 50 }).default('pending'),
   
   departmentApprovedById: varchar('department_approved_by_id', { length: 24 }),
@@ -273,7 +275,7 @@ export const purchaseOrders = pgTable('purchase_orders', {
   totalPrice: varchar('total_price', { length: 50 }),
   deliveryLocationId: varchar('delivery_location_id', { length: 24 }).notNull(),
   deliveryDate: timestamp('delivery_date').notNull(),
-  deliveryContactId: varchar('delivery_contact_id', { length: 24 }),
+  deliveryContactId: varchar('delivery_contact_id', { length: 255 }),
   deliveryAddressSnapshot: json('delivery_address_snapshot'),
   shipping: varchar('shipping', { length: 255 }),
   generalTerms: text('general_terms'),
@@ -291,6 +293,8 @@ export const purchaseOrders = pgTable('purchase_orders', {
   pdfUrl: text('pdf_url'),
   serviceClassificationOverride: text('service_classification_override'),
   serviceClassificationReason: text('service_classification_reason'),
+  sla: json('sla'),
+  attachments: json('attachments'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -420,4 +424,11 @@ export const itemHistory = pgTable('item_history', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-
+export const slas = pgTable('slas', {
+  id: varchar('id', { length: 24 }).primaryKey(),
+  title: varchar('title', { length: 255 }).notNull(),
+  content: text('content').notNull(),
+  createdById: varchar('created_by_id', { length: 24 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});

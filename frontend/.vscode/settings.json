@@ -1,0 +1,13 @@
+{
+    "tailwindCSS.experimental.configFile": "./tailwind.config.ts",
+    "tailwindCSS.includeLanguages": {
+      "typescript": "javascript",
+      "typescriptreact": "javascript"
+    },
+    "tailwindCSS.classAttributes": [
+      "class",
+      "className",
+      "ngClass"
+    ]
+  }
+  

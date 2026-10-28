@@ -1,6 +1,6 @@
 import { notifyUsers } from "./notification";
 import User from "../models/user.model";
-import Vendor from "../models/vendor.model";
+import RFQ from "../models/rfq.model";
 import Department from "../models/department.model";
 import { UserRole } from "../types/enums";
 
@@ -29,7 +29,7 @@ export async function getRequisitionStakeholders(requisition: any) {
   }
 
   // Get department head
-  if (requisition.department) {
+  if (requisition.department && requisition.status !== "hodToolComment") {
     const dept = await Department.findById(requisition.department);
     if (dept && dept.head) {
       stakeholders.departmentHead =
@@ -63,6 +63,93 @@ export async function getRequisitionStakeholders(requisition: any) {
   return stakeholders;
 }
 
+const asId = (value: any): string | undefined => {
+  const id = value?._id || value?.id || value;
+  return id ? String(id) : undefined;
+};
+
+export async function notifyRequisitionStatusChanged(
+  requisition: any,
+  actorId: string,
+  message: string,
+): Promise<void> {
+  try {
+    const [stakeholders, additionalApprovers, relatedRfqs] = await Promise.all([
+      getRequisitionStakeholders(requisition),
+      User.find({
+        role: {
+          $in: [
+            UserRole.HEAD_OF_FINANCE,
+            UserRole.FINANCE_MANAGER,
+            UserRole.ACCOUNTS_APPROVER,
+            UserRole.HR_APPROVER,
+            UserRole.HEAD_OF_HR,
+            UserRole.ADMIN,
+            UserRole.SUPER_ADMIN,
+          ],
+        },
+        isActive: true,
+      }).select("_id"),
+      RFQ.find({ requisition: asId(requisition) }).lean(),
+    ]);
+
+    const approverIds = (requisition.approvals || [])
+      .map((approval: any) => asId(approval.approver))
+      .filter(Boolean) as string[];
+    const targetUserIds = Array.from(
+      new Set(
+        [
+          stakeholders.requester,
+          stakeholders.departmentHead,
+          asId(requisition.assignedApprover),
+          ...approverIds,
+          ...stakeholders.procurementManagers,
+          ...stakeholders.hhras,
+          ...additionalApprovers.map((user: any) => asId(user)),
+        ].filter(Boolean) as string[],
+      ),
+    ).filter((id) => id !== String(actorId));
+    const targetVendorIds = Array.from(
+      new Set(
+        [
+          ...stakeholders.selectedVendors,
+          ...relatedRfqs.flatMap((rfq: any) => [
+            ...(Array.isArray(rfq.vendors) ? rfq.vendors : []),
+            rfq.vendor,
+          ]),
+        ]
+          .map(asId)
+          .filter(Boolean) as string[],
+      ),
+    );
+
+    if (!targetUserIds.length && !targetVendorIds.length) return;
+
+    await notifyUsers({
+      type: "requisition_status_changed",
+      actorId,
+      targetUserIds,
+      targetVendorIds,
+      resource: {
+        kind: "requisition",
+        id: String(requisition._id || requisition.id),
+      },
+      metadata: {
+        resourceNumber: requisition.requisitionNumber,
+        title: requisition.title,
+        notificationTitle:
+          requisition.status === "hodToolComment"
+            ? "Work-tool department HoD action required"
+            : "Requisition status updated",
+        newStatus: requisition.status,
+        message,
+      },
+    });
+  } catch (error) {
+    console.error("[notifyRequisitionStatusChanged] failed", error);
+  }
+}
+
 /**
  * Notify when requisition is created
  */
@@ -71,26 +158,11 @@ export async function notifyRequisitionCreated(
   actorId: string
 ) {
   try {
-    const stakeholders = await getRequisitionStakeholders(requisition);
-
-    // If created by staff, notify department head
-    if (stakeholders.departmentHead) {
-      await notifyUsers({
-        type: "requisition_status_changed",
-        actorId,
-        targetUserIds: [stakeholders.departmentHead],
-        resource: {
-          kind: "requisition",
-          id: requisition._id.toString(),
-        },
-        metadata: {
-          resourceNumber: requisition.requisitionNumber,
-          title: requisition.title,
-          newStatus: requisition.status,
-          message: "A new requisition has been created in your department.",
-        },
-      });
-    }
+    await notifyRequisitionStatusChanged(
+      requisition,
+      actorId,
+      "A new requisition has been created and is awaiting review.",
+    );
   } catch (error) {
     console.error("[notifyRequisitionCreated] failed", error);
   }
@@ -104,31 +176,11 @@ export async function notifyRequisitionSubmitted(
   actorId: string
 ) {
   try {
-    const stakeholders = await getRequisitionStakeholders(requisition);
-    const targetUserIds: string[] = [];
-
-    // Notify department head
-    if (stakeholders.departmentHead) {
-      targetUserIds.push(stakeholders.departmentHead);
-    }
-
-    if (targetUserIds.length > 0) {
-      await notifyUsers({
-        type: "requisition_status_changed",
-        actorId,
-        targetUserIds,
-        resource: {
-          kind: "requisition",
-          id: requisition._id.toString(),
-        },
-        metadata: {
-          resourceNumber: requisition.requisitionNumber,
-          title: requisition.title,
-          newStatus: requisition.status,
-          message: "A requisition has been submitted for your approval.",
-        },
-      });
-    }
+    await notifyRequisitionStatusChanged(
+      requisition,
+      actorId,
+      "A requisition has been submitted and its status has changed.",
+    );
   } catch (error) {
     console.error("[notifyRequisitionSubmitted] failed", error);
   }
@@ -143,39 +195,13 @@ export async function notifyDepartmentApproval(
   comments?: string
 ) {
   try {
-    const stakeholders = await getRequisitionStakeholders(requisition);
-    const targetUserIds: string[] = [];
-
-    // Notify requester
-    if (stakeholders.requester) {
-      targetUserIds.push(stakeholders.requester);
-    }
-
-    // Notify procurement managers
-    targetUserIds.push(...stakeholders.procurementManagers);
-
-    // Notify HHRAs
-    targetUserIds.push(...stakeholders.hhras);
-
-    if (targetUserIds.length > 0) {
-      await notifyUsers({
-        type: "requisition_status_changed",
-        actorId,
-        targetUserIds,
-        resource: {
-          kind: "requisition",
-          id: requisition._id.toString(),
-        },
-        metadata: {
-          resourceNumber: requisition.requisitionNumber,
-          title: requisition.title,
-          newStatus: requisition.status,
-          message: comments
-            ? `Requisition approved by department. Comment: ${comments}`
-            : "Requisition approved by department.",
-        },
-      });
-    }
+    await notifyRequisitionStatusChanged(
+      requisition,
+      actorId,
+      comments
+        ? `Requisition approved by department. Comment: ${comments}`
+        : "Requisition approved by department.",
+    );
   } catch (error) {
     console.error("[notifyDepartmentApproval] failed", error);
   }
@@ -190,26 +216,11 @@ export async function notifyDepartmentRejection(
   comments: string
 ) {
   try {
-    const stakeholders = await getRequisitionStakeholders(requisition);
-
-    // Notify requester only
-    if (stakeholders.requester) {
-      await notifyUsers({
-        type: "requisition_status_changed",
-        actorId,
-        targetUserIds: [stakeholders.requester],
-        resource: {
-          kind: "requisition",
-          id: requisition._id.toString(),
-        },
-        metadata: {
-          resourceNumber: requisition.requisitionNumber,
-          title: requisition.title,
-          newStatus: requisition.status,
-          message: `Requisition rejected by department. Reason: ${comments}`,
-        },
-      });
-    }
+    await notifyRequisitionStatusChanged(
+      requisition,
+      actorId,
+      `Requisition rejected by department. Reason: ${comments}`,
+    );
   } catch (error) {
     console.error("[notifyDepartmentRejection] failed", error);
   }

@@ -7,6 +7,10 @@ const RFQ: any = {
   ...BaseRfq,
 
   async create(data: any) {
+    if (Array.isArray(data)) {
+      return Promise.all(data.map((rfq) => this.create(rfq)));
+    }
+
     if (!data.rfqNumber) {
       const date = new Date();
       const year = date.getFullYear().toString().slice(-2);

@@ -2,6 +2,7 @@ import express from "express";
 import {
   getPurchaseOrders,
   getPurchaseOrder,
+  getRelatedPOItems,
   createPurchaseOrderFromRFQ,
   updatePurchaseOrder,
   acknowledgePurchaseOrder,
@@ -97,6 +98,7 @@ router.get("/", getPurchaseOrders);
  *       404:
  *         description: Purchase order not found
  */
+router.get("/:id/related", getRelatedPOItems);
 router.get("/:id", getPurchaseOrder);
 
 /**

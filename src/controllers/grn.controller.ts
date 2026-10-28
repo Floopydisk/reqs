@@ -18,6 +18,7 @@ import {
   RFQStatus,
 } from "../types/enums";
 import { getUserId } from "../utils/objectIdHelper";
+import { notifyRequisitionStatusChanged } from "../utils/requisitionNotifications";
 
 // @desc    Create GRN from Purchase Order
 // @route   POST /api/purchase-orders/:poId/grn
@@ -647,6 +648,7 @@ export const pmConfirmGRN = async (
     }
 
     // Update requisition and item statuses
+    let statusChangedRequisition: any = null;
     const requisition = await Requisition.findById(grn.requisition).session(
       session
     );
@@ -671,9 +673,18 @@ export const pmConfirmGRN = async (
       }
 
       await requisition.save({ session });
+      statusChangedRequisition = requisition;
     }
 
     await session.commitTransaction();
+
+    if (statusChangedRequisition) {
+      await notifyRequisitionStatusChanged(
+        statusChangedRequisition,
+        getUserId(req.user)?.toString() || "",
+        `Goods receipt confirmed; requisition status changed to ${statusChangedRequisition.status}.`,
+      );
+    }
 
     res.status(200).json({
       success: true,

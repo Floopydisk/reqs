@@ -93,6 +93,22 @@ const options = {
       },
     ],
     components: {
+      schemas: {
+        AuthError: {
+          type: "object",
+          required: ["success", "code", "detail", "message"],
+          properties: {
+            success: { type: "boolean", example: false },
+            code: { type: "string", example: "INTRANET_UNAVAILABLE_NO_LOCAL_ACCOUNT" },
+            detail: {
+              type: "string",
+              example:
+                "The intranet is unavailable and this account has not logged in to Requisite before",
+            },
+            message: { type: "string" },
+          },
+        },
+      },
       securitySchemes: {
         bearerAuth: {
           type: "http",

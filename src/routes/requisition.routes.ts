@@ -2,6 +2,7 @@ import express from "express";
 import {
   getRequisitions,
   getRequisition,
+  getRelatedRequisitionItems,
   getEligibleApprovers,
   createRequisition,
   updateRequisition,
@@ -10,6 +11,7 @@ import {
   departmentApproval,
   departmentRejection,
   hhraApproval,
+  hodToolComment,
   hofApproval,
   hofRejectRequisition,
   uploadAttachment,
@@ -38,6 +40,10 @@ import { body } from "express-validator";
 import Requisition from "../models/requisition.model";
 import { parseItems } from "../middleware/parseItems.middleware";
 import { getItemHistory } from "../utils/itemHistory";
+import {
+  normalizeServiceWorkToolFields,
+  validateWorkToolCategories,
+} from "../utils/workTool";
 
 const router = express.Router({ mergeParams: true });
 
@@ -222,6 +228,7 @@ router.get("/eligible-approvers", getEligibleApprovers);
  *       404:
  *         description: Requisition not found
  */
+router.get("/:id/related", getRelatedRequisitionItems);
 router.get("/:id", getRequisition);
 
 /**
@@ -229,7 +236,7 @@ router.get("/:id", getRequisition);
  * /api/requisitions:
  *   post:
  *     summary: Create requisition
- *     description: Create a new requisition. If the requester is the Head of Department (HoD) himself, the request is automatically approved at the department level. If the requisition contains working tools, it proceeds to HHRA approval -> Head of Finance (HoF) approval -> Procurement Manager (PM) level. If it does not contain working tools, it moves directly from department approval to HoF approval -> PM level.
+ *     description: Any authenticated user can create a requisition for their department. A HoD's requisition is automatically approved at the department stage. Work-tool requests proceed through HoD -> HHRA -> work-tool department HoD comment -> PM; other requests, including services, proceed through HoD -> PM. HoF has read-only visibility.
  *     tags: [Requisitions]
  *     security:
  *       - bearerAuth: []
@@ -282,6 +289,8 @@ router.get("/:id", getRequisition);
  *                   - itemType (required): "product" or "service"
  *                   - itemDescription (required): string
  *                   - isWorkTool (required): boolean
+ *                   - workToolSubcategory (required for work tools): one category from Laptop Accessories, Phone Accessories, Office Equipment, Security Accessories
+ *                   - all work tool items in one requisition must use the same category; that category determines the HoD comment approver
  *                   - preferredBrand (optional): string or empty string ""
  *                   - units (optional): number
  *                   - UOM (optional): string or empty string ""
@@ -289,8 +298,8 @@ router.get("/:id", getRequisition);
  *                   - recommendedVendor (optional): MongoDB ObjectId or empty string ""
  *
  *                   Note: For optional fields, you can either omit them or send empty string "". Both will be treated as undefined.
- *                 default: '[{"itemName":"Paper","itemType":"product","itemDescription":"A4 paper","preferredBrand":"HP","units":10,"UOM":"reams","isWorkTool":false,"recommendedVendor":""},{"itemName":"Printer","itemType":"product","itemDescription":"Laser printer","preferredBrand":"DELL","units":1,"UOM":"unit","isWorkTool":true,"recommendedVendor":""}]'
- *                 example: '[{"itemName":"Paper","itemType":"product","itemDescription":"A4 paper","preferredBrand":"HP","units":10,"UOM":"reams","isWorkTool":false,"recommendedVendor":""},{"itemName":"Printer","itemType":"product","itemDescription":"Laser printer","preferredBrand":"DELL","units":1,"UOM":"unit","isWorkTool":true,"recommendedVendor":""}]'
+ *                 default: '[{"itemName":"Paper","itemType":"product","itemDescription":"A4 paper","preferredBrand":"HP","units":10,"UOM":"reams","isWorkTool":false,"recommendedVendor":""},{"itemName":"Printer","itemType":"product","itemDescription":"Laser printer","preferredBrand":"DELL","units":1,"UOM":"unit","isWorkTool":true,"workToolSubcategory":["Laptop Accessories"],"recommendedVendor":""}]'
+ *                 example: '[{"itemName":"Paper","itemType":"product","itemDescription":"A4 paper","preferredBrand":"HP","units":10,"UOM":"reams","isWorkTool":false,"recommendedVendor":""},{"itemName":"Printer","itemType":"product","itemDescription":"Laser printer","preferredBrand":"DELL","units":1,"UOM":"unit","isWorkTool":true,"workToolSubcategory":["Laptop Accessories"],"recommendedVendor":""}]'
  *           encoding:
  *             items:
  *               contentType: application/json
@@ -299,7 +308,7 @@ router.get("/:id", getRequisition);
  *         label: multipart with repeated items fields
  *         source: |
  *           curl -X POST \
- *             'http://localhost:3003/api/requisitions' \
+ *             'http://localhost:3004/api/requisitions' \
  *             -H 'accept: application/json' \
  *             -H 'Authorization: Bearer <your_token>' \
  *             -H 'Content-Type: multipart/form-data' \
@@ -314,7 +323,7 @@ router.get("/:id", getRequisition);
  *         label: with empty string for optional parameters
  *         source: |
  *           curl -X POST \
- *             'http://localhost:3003/api/requisitions' \
+ *             'http://localhost:3004/api/requisitions' \
  *             -H 'accept: application/json' \
  *             -H 'Authorization: Bearer <your_token>' \
  *             -H 'Content-Type: multipart/form-data' \
@@ -406,6 +415,12 @@ router.get("/:id", getRequisition);
  *                           isWorkTool:
  *                             type: boolean
  *                             example: false
+ *                           workToolSubcategory:
+ *                             type: array
+ *                             items:
+ *                               type: string
+ *                               enum: [Laptop Accessories, Phone Accessories, Office Equipment, Security Accessories]
+ *                             example: ["Laptop Accessories"]
  *                           status:
  *                             type: string
  *                             example: "pending"
@@ -593,7 +608,7 @@ router.post("/", uploadItemImage, parseItems, createRequisition);
  *         label: multipart with repeated items fields
  *         source: |
  *           curl -X PUT \
- *             'http://localhost:3003/api/requisitions/{id}' \
+ *             'http://localhost:3004/api/requisitions/{id}' \
  *             -H 'accept: application/json' \
  *             -H 'Authorization: Bearer <your_token>' \
  *             -H 'Content-Type: multipart/form-data' \
@@ -694,14 +709,6 @@ router.delete("/:id", authorize(UserRole.STAFF), deleteRequisition);
  */
 router.put(
   "/:id/submit",
-  authorize(
-    UserRole.STAFF,
-    UserRole.DEPARTMENT_HEAD,
-    UserRole.PROCUREMENT_MANAGER,
-    UserRole.HHRA,
-    UserRole.ADMIN,
-    UserRole.SUPER_ADMIN,
-  ),
   submitRequisition,
 );
 
@@ -710,7 +717,7 @@ router.put(
  * /api/requisitions/{id}/department-approval:
  *   put:
  *     summary: Department head approval
- *     description: Approve or reject a requisition as department head. If approved and requisition contains work tools, it moves to HR_REVIEW for HHRA approval. If non-work tools, it moves to DEPARTMENT_APPROVED awaiting Head of Finance (HoF) approval.
+ *     description: Approve or reject a submitted requisition as its department HoD. Work-tool requests move to HHRA review; other requests, including services, become ready for PM review.
  *     tags: [Requisitions, Requisitions - Finance Approval]
  *     security:
  *       - bearerAuth: []
@@ -894,12 +901,25 @@ router.put(
   hhraApproval,
 );
 
+/** Record the mandatory comment-only HoD step after HHRA approves a work-tool requisition. */
+router.put(
+  "/:id/hod-tool-comment",
+  authorize(
+    UserRole.DEPARTMENT_HEAD,
+    UserRole.HEAD_OF_FINANCE,
+    UserRole.HEAD_OF_HR,
+    UserRole.HHRA,
+  ),
+  validate([body("comments").trim().notEmpty().withMessage("A tool comment is required")]),
+  hodToolComment,
+);
+
 /**
  * @swagger
  * /api/requisitions/{id}/hof-approval:
  *   put:
- *     summary: Head of Finance approval for requisition
- *     description: Final requisition approval before moving to Procurement Manager level (RFQ/PO generation). If requisition contains work tools, it must be approved by HHRA first. If non-work tools, it must be approved by Department Head first.
+ *     summary: Legacy Head of Finance requisition approval (disabled)
+ *     description: HoF is read-only for requisitions. This legacy endpoint returns 403; procurement proceeds after the required HoD and, when applicable, HHRA/work-tool HoD stages.
  *     tags: [Requisitions]
  *     security:
  *       - bearerAuth: []
@@ -927,41 +947,123 @@ router.put(
  *                 description: Approval or rejection reason / comments
  *                 example: Budget verified and approved for procurement
  *     responses:
- *       200:
- *         description: Requisition approved or rejected by Head of Finance
  *       400:
  *         description: Invalid request or prerequisite approvals missing
  *       401:
  *         description: Not authenticated
  *       403:
- *         description: Not authorized (Head of Finance or Admin only)
+ *         description: Not authorized, or HoF cannot approve or reject requisitions
  *       404:
  *         description: Requisition not found
  */
-router.put(
-  "/:id/hof-approval",
-  authorize(
-    UserRole.HEAD_OF_FINANCE,
-    UserRole.FINANCE_MANAGER,
-    UserRole.DEPARTMENT_HEAD,
-    UserRole.ADMIN,
-    UserRole.SUPER_ADMIN,
-  ),
-  validate([
-    body("status")
-      .optional()
-      .isIn(["approved", "rejected"])
-      .withMessage("Status must be either approved or rejected"),
-  ]),
-  hofApproval,
-);
+router
+  .route("/:id/hof-approval")
+  .put(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .post(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .patch(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  );
+
+router
+  .route("/:id/hof-approve")
+  .put(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .post(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .patch(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  );
 
 /**
  * @swagger
  * /api/requisitions/{id}/finance-approval:
  *   put:
- *     summary: Finance approval for requisition (alias for hof-approval)
- *     description: Alias for /api/requisitions/{id}/hof-approval
+ *     summary: Legacy Finance requisition approval (disabled)
+ *     description: HoF has read-only visibility; finance requisition approval is no longer part of the workflow.
  *     tags: [Requisitions]
  *     security:
  *       - bearerAuth: []
@@ -995,23 +1097,107 @@ router.put(
  *       404:
  *         description: Requisition not found
  */
-router.put(
-  "/:id/finance-approval",
-  authorize(
-    UserRole.HEAD_OF_FINANCE,
-    UserRole.FINANCE_MANAGER,
-    UserRole.DEPARTMENT_HEAD,
-    UserRole.ADMIN,
-    UserRole.SUPER_ADMIN,
-  ),
-  validate([
-    body("status")
-      .optional()
-      .isIn(["approved", "rejected"])
-      .withMessage("Status must be either approved or rejected"),
-  ]),
-  hofApproval,
-);
+router
+  .route("/:id/finance-approval")
+  .put(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .post(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .patch(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  );
+
+router
+  .route("/:id/finance-approve")
+  .put(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .post(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  )
+  .patch(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("status")
+        .optional()
+        .isIn(["approved", "rejected"])
+        .withMessage("Status must be either approved or rejected"),
+    ]),
+    hofApproval,
+  );
 
 /**
  * @swagger
@@ -1052,20 +1238,47 @@ router.put(
  *       404:
  *         description: Requisition not found
  */
-router.put(
-  "/:id/hof-reject",
-  authorize(
-    UserRole.HEAD_OF_FINANCE,
-    UserRole.FINANCE_MANAGER,
-    UserRole.DEPARTMENT_HEAD,
-    UserRole.ADMIN,
-    UserRole.SUPER_ADMIN,
-  ),
-  validate([
-    body("comments").notEmpty().withMessage("Rejection comments are required"),
-  ]),
-  hofRejectRequisition,
-);
+router
+  .route("/:id/hof-reject")
+  .put(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("comments").notEmpty().withMessage("Rejection comments are required"),
+    ]),
+    hofRejectRequisition,
+  )
+  .post(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("comments").notEmpty().withMessage("Rejection comments are required"),
+    ]),
+    hofRejectRequisition,
+  )
+  .patch(
+    authorize(
+      UserRole.HEAD_OF_FINANCE,
+      UserRole.FINANCE_MANAGER,
+      UserRole.DEPARTMENT_HEAD,
+      UserRole.ADMIN,
+      UserRole.SUPER_ADMIN,
+    ),
+    validate([
+      body("comments").notEmpty().withMessage("Rejection comments are required"),
+    ]),
+    hofRejectRequisition,
+  );
 
 /**
 /**
@@ -1537,12 +1750,24 @@ router.put(
         });
       }
 
+      const proposedItems = requisition.items.map((currentItem: any) =>
+        currentItem._id?.toString() === itemId
+          ? { ...currentItem, ...updates }
+          : currentItem,
+      );
+      normalizeServiceWorkToolFields(proposedItems);
+      const categoryError = validateWorkToolCategories(proposedItems);
+      if (categoryError) {
+        return res.status(400).json({ success: false, message: categoryError });
+      }
+
       // Update fields
       Object.keys(updates).forEach((key) => {
         if (updates[key] !== undefined) {
           (item as any)[key] = updates[key];
         }
       });
+      normalizeServiceWorkToolFields(requisition.items);
 
       await requisition.save();
 

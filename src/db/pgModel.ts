@@ -60,6 +60,9 @@ const FIELD_MAPPINGS: Record<string, Record<string, string>> = {
   departments: {
     head: 'headId',
   },
+  slas: {
+    createdBy: "createdById",
+  },
   vendorCategories: {
     createdBy: 'createdById',
   },
@@ -111,7 +114,28 @@ export function createPgModel<T = any>(
         return isNaN(d.getTime()) ? null : d;
       }
     }
+    if (column && (column.columnType === 'PgVarchar' || column.dataType === 'string')) {
+      if (typeof val === 'number' || typeof val === 'boolean') {
+        return String(val);
+      }
+    }
     return val;
+  }
+
+  function mapNotificationResource(target: any, source: any): void {
+    if (tableName !== 'notifications' || !source.resource) return;
+
+    target.resourceKind = source.resource.kind;
+    const resourceId =
+      source.resource.id?._id ||
+      source.resource.id?.id ||
+      source.resource.id;
+    if (resourceId !== undefined && resourceId !== null) {
+      target.resourceId = String(resourceId);
+    }
+    target.commentId = source.resource.commentId
+      ? String(source.resource.commentId)
+      : null;
   }
 
   function wrapDocument(data: any): any {
@@ -127,6 +151,13 @@ export function createPgModel<T = any>(
       if (doc[pgCol] !== undefined && doc[mongoField] === undefined) {
         doc[mongoField] = doc[pgCol];
       }
+    }
+    if (tableName === 'notifications' && doc.resourceKind && doc.resourceId) {
+      doc.resource = {
+        kind: doc.resourceKind,
+        id: doc.resourceId,
+        ...(doc.commentId ? { commentId: doc.commentId } : {}),
+      };
     }
 
     // Attach Mongoose document helper methods
@@ -171,6 +202,7 @@ export function createPgModel<T = any>(
           updateData[pgCol] = val ? String(val) : null;
         }
       }
+      mapNotificationResource(updateData, this);
 
       if (id) {
         updateData.updatedAt = new Date();
@@ -424,6 +456,9 @@ export function createPgModel<T = any>(
     },
 
     async create(data: any): Promise<any> {
+      if (Array.isArray(data)) {
+        return Promise.all(data.map((item) => this.create(item)));
+      }
       const id = data.id || data._id || generateId();
       const insertData: any = { id };
 
@@ -441,6 +476,7 @@ export function createPgModel<T = any>(
           insertData[pgCol] = val ? String(val) : null;
         }
       }
+      mapNotificationResource(insertData, data);
 
       if (table.createdAt && !insertData.createdAt) insertData.createdAt = new Date();
       if (table.updatedAt && !insertData.updatedAt) insertData.updatedAt = new Date();
@@ -484,6 +520,7 @@ export function createPgModel<T = any>(
           updateData[pgCol] = val ? String(val) : null;
         }
       }
+      mapNotificationResource(updateData, updates);
 
       if (table.updatedAt) updateData.updatedAt = new Date();
       delete updateData.id;
@@ -600,6 +637,7 @@ async function loadRequisitionChildren(reqDoc: any) {
   reqDoc.items = items.map(i => ({
     ...i,
     _id: i.id,
+    workToolSubcategory: i.workToolSubcategory ? [i.workToolSubcategory] : [],
     recommendedVendor: i.recommendedVendorId,
     departmentApprovedBy: i.departmentApprovedById,
     departmentRejectedBy: i.departmentRejectedById,
@@ -609,12 +647,40 @@ async function loadRequisitionChildren(reqDoc: any) {
     hhraRejectedBy: i.hhraRejectedById,
   }));
 
-  reqDoc.approvals = approvals.map(a => ({
-    ...a,
-    _id: a.id,
-    approver: a.approverId,
-    approverRole: (a.stage === "Finance" || a.stage === "HoF") ? "hof" : ((a.stage === "HR" || a.stage === "HHRA") ? "hhr" : "hod"),
-  }));
+  const approverIds = approvals.map(a => a.approverId).filter(Boolean);
+  const userMap = new Map<string, any>();
+  if (approverIds.length > 0) {
+    const approverUsers = await db.select().from(schema.users).where(inArray(schema.users.id, approverIds));
+    for (const u of approverUsers) {
+      userMap.set(u.id, u);
+    }
+  }
+
+  reqDoc.approvals = approvals.map(a => {
+    const u = userMap.get(a.approverId);
+    const resolvedName = (a.approverName && a.approverName.trim()) || (u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : '');
+    return {
+      ...a,
+      _id: a.id,
+      approver: u
+        ? {
+            _id: u.id,
+            firstName: u.firstName,
+            lastName: u.lastName,
+            email: u.email,
+            name: resolvedName,
+          }
+        : a.approverId,
+      approverId: a.approverId,
+      approverName: resolvedName,
+      approverRole: (a.stage === "Finance" || a.stage === "HoF")
+        ? "hof"
+        : ((a.stage === "HR" || a.stage === "HHRA")
+          ? "hhr"
+          : (a.stage === "HOD_TOOL_COMMENT" ? "hodToolComment" : "hod")),
+      approvedAt: a.timestamp,
+    };
+  });
 }
 
 async function saveRequisitionChildren(reqDoc: any) {
@@ -636,6 +702,11 @@ async function saveRequisitionChildren(reqDoc: any) {
         UOM: item.UOM || null,
         recommendedVendorId: item.recommendedVendor ? String(item.recommendedVendor?._id || item.recommendedVendor) : null,
         isWorkTool: Boolean(item.isWorkTool),
+        workToolSubcategory: item.isWorkTool
+          ? (Array.isArray(item.workToolSubcategory)
+            ? item.workToolSubcategory[0] || null
+            : item.workToolSubcategory || null)
+          : null,
         status: item.status || 'pending',
         departmentApprovedById: item.departmentApprovedBy ? String(item.departmentApprovedBy?._id || item.departmentApprovedBy) : null,
         departmentApprovedAt: item.departmentApprovedAt ? new Date(item.departmentApprovedAt) : null,
@@ -660,6 +731,7 @@ async function saveRequisitionChildren(reqDoc: any) {
       reqDoc.items = itemsData.map((it: any) => ({
         ...it,
         _id: it.id,
+        workToolSubcategory: it.workToolSubcategory ? [it.workToolSubcategory] : [],
       }));
     }
   }
@@ -667,19 +739,27 @@ async function saveRequisitionChildren(reqDoc: any) {
   if (Array.isArray(reqDoc.approvals)) {
     await db.delete(schema.requisitionApprovals).where(eq(schema.requisitionApprovals.requisitionId, reqId));
     if (reqDoc.approvals.length > 0) {
-      const approvalsData = reqDoc.approvals.map((app: any) => ({
-        id: app.id || app._id ? String(app.id || app._id) : generateId(),
-        requisitionId: reqId,
-        stage: app.stage,
-        approverId: String(app.approver?._id || app.approver),
-        status: app.status,
-        comments: app.comments || null,
-        timestamp: app.timestamp ? new Date(app.timestamp) : new Date(),
-      }));
+      const approvalsData = reqDoc.approvals.map((app: any) => {
+        const approverId = String(app.approver?._id || app.approverId || app.approver);
+        const approverName = app.approverName || (typeof app.approver === 'object' && app.approver ? `${app.approver.firstName || ''} ${app.approver.lastName || ''}`.trim() : null);
+        return {
+          id: app.id || app._id ? String(app.id || app._id) : generateId(),
+          requisitionId: reqId,
+          stage: app.stage,
+          approverId,
+          approverName: approverName || null,
+          status: app.status,
+          comments: app.comments || null,
+          timestamp: app.timestamp ? new Date(app.timestamp) : new Date(),
+        };
+      });
       await db.insert(schema.requisitionApprovals).values(approvalsData);
       reqDoc.approvals = approvalsData.map((ap: any) => ({
         ...ap,
         _id: ap.id,
+        approver: ap.approverId,
+        approverName: ap.approverName,
+        approvedAt: ap.timestamp,
       }));
     }
   }
@@ -752,6 +832,51 @@ async function populateDocField(doc: any, path: string, currentTable: string) {
         doc.deliveryLocation = { ...loc[0], _id: loc[0].id };
       }
     }
+    } else if (path === 'vendors') {
+    const rawVendors = doc.vendors || (doc.vendorId ? [doc.vendorId] : []);
+    if (Array.isArray(rawVendors) && rawVendors.length > 0) {
+      const vendorIds = rawVendors
+        .map((v: any) => String(v?._id || v?.id || v))
+        .filter(Boolean);
+      if (vendorIds.length > 0) {
+        const vends = await db
+          .select()
+          .from(schema.vendors)
+          .where(inArray(schema.vendors.id, vendorIds));
+        doc.vendors = vends.map((v) => ({ ...v, _id: v.id }));
+      } else {
+        doc.vendors = [];
+      }
+    } else {
+      doc.vendors = [];
+    }
+  } else if (path === 'relatedRfqs') {
+    const reqId = doc.requisitionId || doc.requisition?._id || doc.requisition || doc._id || doc.id;
+    if (reqId) {
+      const rfqList = await db
+        .select()
+        .from(schema.rfqs)
+        .where(eq(schema.rfqs.requisitionId, String(reqId)));
+      doc.relatedRfqs = rfqList.map((r) => ({ ...r, _id: r.id }));
+    } else {
+      doc.relatedRfqs = [];
+    }
+  } else if (path === 'relatedPos') {
+    const reqId = doc.requisitionId || doc.requisition?._id || doc.requisition || (currentTable === 'requisitions' ? (doc._id || doc.id) : null);
+    const rfqId = doc.rfqId || doc.rfq?._id || doc.rfq || (currentTable === 'rfqs' ? (doc._id || doc.id) : null);
+    let poList: any[] = [];
+    if (reqId) {
+      poList = await db
+        .select()
+        .from(schema.purchaseOrders)
+        .where(eq(schema.purchaseOrders.requisitionId, String(reqId)));
+    } else if (rfqId) {
+      poList = await db
+        .select()
+        .from(schema.purchaseOrders)
+        .where(eq(schema.purchaseOrders.rfqId, String(rfqId)));
+    }
+    doc.relatedPos = poList.map((p) => ({ ...p, _id: p.id }));
   } else if (path === 'vendor') {
     if (targetId) {
       const vend = await db.select().from(schema.vendors).where(eq(schema.vendors.id, String(targetId)));

@@ -1,3 +1,6 @@
+import { getRelatedProcurementItems } from "../utils/relatedProcurementHelper";
+import * as schema from "../db/schema";
+import { inArray } from "drizzle-orm";
 import { Request, Response, NextFunction } from "express";
 import { ClientSession, startSession, isValidObjectId } from "../utils/objectIdHelper";
 import PDFDocument from "pdfkit";
@@ -6,7 +9,7 @@ import Requisition from "../models/requisition.model";
 import User from "../models/user.model";
 import Vendor from "../models/vendor.model";
 import { db } from "../db";
-import { rfqs } from "../db/schema";
+import { rfqItems, rfqs } from "../db/schema";
 import { eq, desc } from "drizzle-orm";
 import {
   RFQStatus,
@@ -15,11 +18,13 @@ import {
   UserRole,
 } from "../types/enums";
 import { getUserId } from "../utils/objectIdHelper";
+import { isWorkToolItem } from "../utils/workTool";
 import {
   generateSequentialId,
   getCurrentSequence,
   resetCounter,
 } from "../utils/idGenerator";
+import { notifyRequisitionStatusChanged } from "../utils/requisitionNotifications";
 
 const formatRFQWithVendorIds = (rfq: any) => {
   const source = typeof rfq.toObject === "function" ? rfq.toObject() : rfq;
@@ -294,24 +299,48 @@ export const generateRFQsFromRequisition = async (
       return;
     }
 
-    // Enforce Head of Finance approval gate before RFQ generation
-    const isHofApproved =
+    const isProcurementReady =
+      requisition.status === RequisitionStatus.DEPARTMENT_APPROVED ||
       requisition.status === RequisitionStatus.HOF_APPROVED ||
-      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW ||
-      requisition.approvals?.some(
-        (a: any) =>
-          (a.stage === "Finance" || a.approverRole === "hof") &&
-          a.status === "approved",
-      );
-
-    if (!isHofApproved) {
+      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW;
+    if (!isProcurementReady) {
       await session.abortTransaction();
       res.status(400).json({
         success: false,
         message:
-          "Requisition must be approved by the Head of Finance before generating RFQs",
+          "Requisition must complete the required department and HHRA approvals before generating RFQs",
       });
       return;
+    }
+
+    const hasActiveWorkTools = requisition.items.some(
+      (item: any) => isWorkToolItem(item) && item.status !== ItemStatus.CANCELLED,
+    );
+    if (
+      requisition.status === RequisitionStatus.DEPARTMENT_APPROVED &&
+      hasActiveWorkTools
+    ) {
+      const hasHhraApproval = requisition.approvals?.some(
+        (approval: any) =>
+          (approval.stage === "HHRA" ||
+            approval.stage === "HR" ||
+            approval.approverRole === "hhr") &&
+          approval.status === "approved",
+      );
+      const hasToolHeadComment = requisition.approvals?.some(
+        (approval: any) =>
+          approval.stage === "HOD_TOOL_COMMENT" &&
+          approval.status === "commented",
+      );
+      if (!hasHhraApproval || !hasToolHeadComment) {
+        await session.abortTransaction();
+        res.status(400).json({
+          success: false,
+          message:
+            "Work-tool requisitions require HHRA approval and the work-tool department HoD comment before RFQ generation",
+        });
+        return;
+      }
     }
 
     // Validate items exist and are approved
@@ -327,9 +356,25 @@ export const generateRFQsFromRequisition = async (
       return;
     }
 
+    const hasUnapprovedSelectedItems = selectedItems.some(
+      (item: any) =>
+        item.status !== ItemStatus.DEPARTMENT_APPROVED &&
+        item.status !== ItemStatus.HR_APPROVED &&
+        item.status !== ItemStatus.PROCUREMENT_REVIEW &&
+        item.status !== ItemStatus.RFQ_GENERATED,
+    );
+    if (hasUnapprovedSelectedItems) {
+      await session.abortTransaction();
+      res.status(400).json({
+        success: false,
+        message: "Only department-approved or HHRA-approved items can be included in an RFQ",
+      });
+      return;
+    }
+
     // Enforce Work-Tool HHR gate (Requirement C7)
     for (const item of selectedItems) {
-      if (item.isWorkTool) {
+      if (isWorkToolItem(item)) {
         const isHrApproved =
           item.status === ItemStatus.HR_APPROVED ||
           item.status === ItemStatus.PROCUREMENT_REVIEW ||
@@ -509,6 +554,12 @@ export const generateRFQsFromRequisition = async (
 
     await session.commitTransaction();
 
+    await notifyRequisitionStatusChanged(
+      requisition,
+      getUserId(req.user)?.toString() || "",
+      "RFQ generation started and the requisition status was updated.",
+    );
+
     res.status(201).json({
       success: true,
       message: "RFQ created successfully",
@@ -610,50 +661,18 @@ export const getRFQById = async (
       }
 
       if (rfq) {
-        const requisitionRelated = await Requisition.findById(rfq.requisition)
-          .populate("department", "name")
-          .populate("relatedRfqs", "title rfqNumber")
-          .select("title department relatedRfqs")
-          .lean();
-
-        const departmentName =
-          (requisitionRelated as any)?.department?.name || "N/A";
-
-        const relatedRequests = requisitionRelated
-          ? [
-              {
-                _id: (requisitionRelated as any)._id.toString(),
-                title: (requisitionRelated as any).title || "Request",
-                department: departmentName,
-              },
-            ]
-          : [];
-
-        const relatedRfqs = Array.isArray(requisitionRelated?.relatedRfqs)
-          ? requisitionRelated.relatedRfqs.map((item: any) => ({
-              _id: item._id?.toString?.() || item.toString(),
-              title: item.title || item.rfqNumber || "RFQ",
-              department: departmentName,
-            }))
-          : [];
-
-        const relatedPos = Array.isArray((rfq as any).relatedPos)
-          ? (rfq as any).relatedPos.map((item: any) => ({
-              _id: item._id?.toString?.() || item.toString(),
-              title: item.title || "",
-              department: departmentName,
-            }))
-          : [];
+        const reqId =
+          rfq.requisition?._id || rfq.requisition || (rfq as any).requisitionId;
+        const related = await getRelatedProcurementItems({
+          rfqId: String(rfqId),
+          requisitionId: reqId ? String(reqId) : undefined,
+        });
 
         res.status(200).json({
           success: true,
           data: {
             ...formatRFQWithVendorIds(rfq),
-            related: {
-              requests: relatedRequests,
-              rfqs: relatedRfqs,
-              pos: relatedPos,
-            },
+            related,
           },
         });
         return;
@@ -689,16 +708,28 @@ export const getRFQById = async (
       createdAt: pgRfq.createdAt,
       updatedAt: pgRfq.updatedAt,
     });
+    const pgRfqItems = await db
+      .select()
+      .from(rfqItems)
+      .where(eq(rfqItems.rfqId, String(rfqId)));
+    const formattedItems = pgRfqItems.map((item) => ({
+      ...item,
+      _id: item.id,
+      itemId: item.itemId,
+      quantity: Number(item.quantity),
+    }));
+
+    const related = await getRelatedProcurementItems({
+      rfqId: String(rfqId),
+      requisitionId: pgRfq.requisitionId ? String(pgRfq.requisitionId) : undefined,
+    });
 
     res.status(200).json({
       success: true,
       data: {
         ...formatted,
-        related: {
-          requests: [],
-          rfqs: [],
-          pos: [],
-        },
+        items: formattedItems,
+        related,
       },
     });
   } catch (error) {
@@ -875,6 +906,14 @@ export const issueRFQ = async (
 
     await session.commitTransaction();
 
+    if (requisition) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId?.toString() || "",
+        "RFQs were issued and the requisition is now open for vendor bidding.",
+      );
+    }
+
     res.status(200).json({
       success: true,
       message: "RFQ issued successfully",
@@ -932,6 +971,7 @@ export const issueMultipleRFQs = async (
     }
 
     // Update requisition status if any RFQs were issued
+    let updatedRequisition: any = null;
     if (issuedRFQs.length > 0) {
       const requisitionId = issuedRFQs[0].requisition;
       const requisition =
@@ -942,10 +982,19 @@ export const issueMultipleRFQs = async (
       ) {
         requisition.status = RequisitionStatus.VENDOR_BIDDING;
         await requisition.save({ session });
+        updatedRequisition = requisition;
       }
     }
 
     await session.commitTransaction();
+
+    if (updatedRequisition) {
+      await notifyRequisitionStatusChanged(
+        updatedRequisition,
+        userId?.toString() || "",
+        "RFQs were issued and the requisition is now open for vendor bidding.",
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -1118,6 +1167,24 @@ export const getAllRFQs = async (
   }
 };
 
+
+export const getRelatedRFQItems = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { rfqId } = req.params;
+    const related = await getRelatedProcurementItems({ rfqId: String(rfqId) });
+    res.status(200).json({
+      success: true,
+      data: related,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Download RFQ for one/all/selected vendors as PDF/ZIP
 // @route   GET /api/rfqs/:rfqId/download
 // @access  Private (PM, Admin)
@@ -1140,42 +1207,116 @@ export const downloadRFQs = async (
         .filter(Boolean);
     }
 
-    if (vendorIds.some((id) => !isValidObjectId(id))) {
-      res.status(400).json({
-        success: false,
-        message: "vendorIds query must contain valid MongoDB ObjectIds",
-      });
-      return;
+    let rfq: any = null;
+    try {
+      rfq = await RFQ.findById(rfqId)
+        .populate("vendors", "name email phone contactPerson address")
+        .populate({
+          path: "requisition",
+          select: "requisitionNumber title requester",
+          populate: { path: "requester", select: "firstName lastName email" },
+        })
+        .populate("createdBy", "firstName lastName email")
+        .populate("deliveryLocation", "name address contactPerson phoneNumber email")
+        .lean();
+    } catch (e) {
+      // Fallback to PostgreSQL below
     }
-
-    const rfq = await RFQ.findById(rfqId)
-      .populate("vendors", "name email phone contactPerson address")
-      .populate({
-        path: "requisition",
-        select: "requisitionNumber title requester",
-        populate: { path: "requester", select: "firstName lastName email" },
-      })
-      .populate("createdBy", "firstName lastName email")
-      .populate("deliveryLocation", "name address contactPerson phoneNumber email")
-      .lean();
 
     if (!rfq) {
-      res.status(404).json({
-        success: false,
-        message: "RFQ not found",
+      const pgRfq = await db.query.rfqs.findFirst({
+        where: eq(rfqs.id, String(rfqId)),
       });
-      return;
+      if (!pgRfq) {
+        res.status(404).json({
+          success: false,
+          message: "RFQ not found",
+        });
+        return;
+      }
+      rfq = {
+        ...pgRfq,
+        _id: pgRfq.id,
+        deliveryLocation: pgRfq.deliveryLocationId,
+        requisition: pgRfq.requisitionId,
+      };
     }
 
-    const vendors = Array.isArray((rfq as any).vendors)
-      ? (rfq as any).vendors
-      : [];
-    const rfqVendorIds = vendors.map((v: any) => v._id.toString());
+    // Ensure items are loaded
+    if (!rfq.items || rfq.items.length === 0) {
+      const dbItems = await db
+        .select()
+        .from(rfqItems)
+        .where(eq(rfqItems.rfqId, String(rfqId)));
+      rfq.items = dbItems;
+    }
+
+    // Ensure deliveryLocation is populated
+    if (typeof rfq.deliveryLocation === "string") {
+      const loc = await db.query.locations.findFirst({
+        where: eq(schema.locations.id, rfq.deliveryLocation),
+      });
+      if (loc) {
+        rfq.deliveryLocation = loc;
+      }
+    }
+
+    // Ensure requisition and requester are populated
+    if (typeof rfq.requisition === "string") {
+      const reqDoc = await db.query.requisitions.findFirst({
+        where: eq(schema.requisitions.id, rfq.requisition),
+        with: {
+          requester: true,
+        },
+      });
+      if (reqDoc) {
+        rfq.requisition = reqDoc;
+      }
+    }
+
+    // Resolve vendors
+    let rawVendorList: any[] = [];
+    if (Array.isArray(rfq.vendors) && rfq.vendors.length > 0) {
+      rawVendorList = rfq.vendors;
+    } else if (rfq.vendor) {
+      rawVendorList = [rfq.vendor];
+    } else if (rfq.vendorId) {
+      rawVendorList = [rfq.vendorId];
+    }
+
+    const allVendorIds = rawVendorList
+      .map((v: any) => (typeof v === "object" ? String(v._id || v.id || "") : String(v || "")).trim())
+      .filter(Boolean);
+
+    let dbVendors: any[] = [];
+    if (allVendorIds.length > 0) {
+      dbVendors = await db
+        .select()
+        .from(schema.vendors)
+        .where(inArray(schema.vendors.id, allVendorIds));
+    }
+
+    const vendorMap = new Map<string, any>();
+    for (const dv of dbVendors) {
+      vendorMap.set(String(dv.id), { ...dv, _id: dv.id });
+    }
+
+    const resolvedVendors: any[] = [];
+    for (const v of rawVendorList) {
+      const vId = typeof v === "object" ? String(v._id || v.id || "") : String(v || "");
+      if (vendorMap.has(vId)) {
+        resolvedVendors.push(vendorMap.get(vId));
+      } else if (typeof v === "object" && (v.name || v.companyName)) {
+        resolvedVendors.push({ ...v, _id: v._id || v.id || vId, name: v.name || v.companyName });
+      }
+    }
+
+    const rfqVendorIds = resolvedVendors.map((v: any) => String(v._id || v.id));
 
     const selectedVendors =
       vendorIds.length > 0
-        ? vendors.filter((v: any) => vendorIds.includes(v._id.toString()))
-        : vendors;
+        ? resolvedVendors.filter((v: any) => vendorIds.includes(String(v._id || v.id)))
+        : resolvedVendors;
 
     if (selectedVendors.length === 0) {
       res.status(404).json({
@@ -1188,23 +1329,12 @@ export const downloadRFQs = async (
       return;
     }
 
-    // Ensure all requested vendor IDs belong to this RFQ
-    if (vendorIds.length > 0) {
-      const invalidIds = vendorIds.filter((id) => !rfqVendorIds.includes(id));
-      if (invalidIds.length > 0) {
-        res.status(400).json({
-          success: false,
-          message: `Some vendorIds are not tied to this RFQ: ${invalidIds.join(", ")}`,
-        });
-        return;
-      }
-    }
-
     const singleVendorDownload = selectedVendors.length === 1;
 
     if (singleVendorDownload) {
       const pdf = await createRFQPdfBuffer(rfq, selectedVendors[0]);
-      const fileName = `RFQ_${rfq.rfqNumber || rfq._id}_${selectedVendors[0]._id}.pdf`;
+      const safeVendorName = (selectedVendors[0].name || selectedVendors[0]._id).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const fileName = `RFQ_${rfq.rfqNumber || rfq._id}_${safeVendorName}.pdf`;
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
@@ -1228,7 +1358,8 @@ export const downloadRFQs = async (
 
     for (const vendor of selectedVendors) {
       const pdf = await createRFQPdfBuffer(rfq, vendor);
-      const fileName = `RFQ_${rfq.rfqNumber || rfq._id}_${vendor._id}.pdf`;
+      const safeVendorName = (vendor.name || vendor._id).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const fileName = `RFQ_${rfq.rfqNumber || rfq._id}_${safeVendorName}.pdf`;
       archive.append(pdf, { name: fileName });
     }
 

@@ -1,6 +1,7 @@
+import { getRelatedProcurementItems } from "../utils/relatedProcurementHelper";
 import { db } from "../db";
-import { users, requisitions } from "../db/schema";
-import { eq, desc } from "drizzle-orm";
+import { users, requisitions, departments, requisitionApprovals } from "../db/schema";
+import { eq, desc, or, inArray } from "drizzle-orm";
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { Request, Response, NextFunction } from "express";
 import { ObjectId, isValidObjectId, getUserId } from "../utils/objectIdHelper";
@@ -14,16 +15,11 @@ import { uploadToS3 } from "../utils/fileUpload";
 import emailService from "../utils/emailService";
 import requisitionHistoryModel from "../models/requisitionHistory.model";
 import {
-  notifications,
-  // notifyUsers
-} from "../utils/notification";
-import {
   notifyRequisitionCreated,
   notifyRequisitionSubmitted,
-  notifyDepartmentApproval,
-  notifyDepartmentRejection,
   notifyRequisitionUpdated,
   notifyRequisitionDeleted,
+  notifyRequisitionStatusChanged,
 } from "../utils/requisitionNotifications";
 import Location from "../models/location.model";
 import { logItemHistory } from "../utils/itemHistory";
@@ -33,6 +29,16 @@ import {
   notifyBulkItemAction,
 } from "../utils/itemNotifications";
 import { updateRequisitionStatusFromItems } from "../utils/requisitionStatusAggregation";
+import { canAccessRequisition } from "../utils/requisitionAccess";
+import {
+  getWorkToolCategory,
+  hasActiveWorkToolItems,
+  isActiveWorkToolItem,
+  isWorkToolItem,
+  normalizeServiceWorkToolFields,
+  resolveWorkToolDepartmentHead,
+  validateWorkToolCategories,
+} from "../utils/workTool";
 
 const normalizeObjectId = (value: unknown): string | null => {
   if (!value) {
@@ -142,7 +148,7 @@ const applyUploadedImagesToItems = async (
 
 // @desc    Get requisitions by user
 // @route   GET /api/users/:userId/requisitions
-// @access  Private/Admin/Self
+// @access  Private/Self
 export const getRequisitionsByUser = async (
   req: Request,
   res: Response,
@@ -150,6 +156,13 @@ export const getRequisitionsByUser = async (
 ): Promise<void> => {
   try {
     const { userId } = req.params;
+    if (String(userId) !== normalizeObjectId(getUserId(req.user))) {
+      res.status(403).json({
+        success: false,
+        message: "You can only view requisitions that you created",
+      });
+      return;
+    }
 
     // Verify user exists
     const user = await db.query.users.findFirst({ where: eq(users.id, String(userId)) });
@@ -200,7 +213,11 @@ export const getRequisitionsByUser = async (
         department: true,
         requester: true,
         items: true,
-        approvals: true,
+        approvals: {
+          with: {
+            approver: true,
+          },
+        },
       },
       orderBy: [desc(requisitions.createdAt)],
     });
@@ -237,6 +254,7 @@ export const getRequisitionsByUser = async (
             code: r.department.code,
           }
         : r.departmentId,
+      assignedApprover: r.assignedApproverId,
       status: r.status,
       items:
         r.items?.map((it) => ({
@@ -248,17 +266,45 @@ export const getRequisitionsByUser = async (
           uploadImage: it.uploadImage,
           units: it.units,
           UOM: it.UOM,
+          isWorkTool: it.isWorkTool,
+          workToolSubcategory: it.workToolSubcategory ? [it.workToolSubcategory] : [],
           status: it.status,
         })) || [],
       approvals:
-        r.approvals?.map((ap) => ({
-          _id: ap.id,
-          stage: ap.stage,
-          approver: ap.approverId,
-          status: ap.status,
-          comments: ap.comments,
-          timestamp: ap.timestamp,
-        })) || [],
+        r.approvals?.map((ap: any) => {
+          const approverName =
+            ap.approverName ||
+            (ap.approver
+              ? `${ap.approver.firstName || ""} ${ap.approver.lastName || ""}`.trim()
+              : "");
+          return {
+            _id: ap.id,
+            stage: ap.stage,
+            approver: ap.approver
+              ? {
+                  _id: ap.approver.id,
+                  firstName: ap.approver.firstName,
+                  lastName: ap.approver.lastName,
+                  email: ap.approver.email,
+                  name: approverName,
+                }
+              : ap.approverId,
+            approverId: ap.approverId,
+            approverName,
+            approverRole:
+              ap.stage === "Finance" || ap.stage === "HoF"
+                ? "hof"
+                : ap.stage === "HR" || ap.stage === "HHRA"
+                  ? "hhr"
+                  : ap.stage === "HOD_TOOL_COMMENT"
+                    ? "hodToolComment"
+                  : "hod",
+            status: ap.status,
+            comments: ap.comments,
+            timestamp: ap.timestamp,
+            approvedAt: ap.timestamp,
+          };
+        }) || [],
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
@@ -356,72 +402,6 @@ export const getRequisitions = async (
       query = { ...query, title: { $regex: title, $options: "i" } };
     }
 
-    // Filter requisitions based on user role
-    if (req.user!.role === UserRole.STAFF) {
-      // Staff can only see their own requisitions (all statuses including DRAFT)
-      query = { ...query, requester: req.user!._id };
-    } else if (
-      req.user!.role === UserRole.HEAD_OF_FINANCE ||
-      req.user!.role === UserRole.HEAD_OF_HR ||
-      req.user!.role === UserRole.HR_APPROVER ||
-      req.user!.role === UserRole.HHRA ||
-      req.user!.role === UserRole.ADMIN ||
-      req.user!.role === UserRole.SUPER_ADMIN
-    ) {
-      // Full platform visibility for HOF, HHR, and Admins (Requirements D1, D3)
-    } else if (req.user!.role === UserRole.DEPARTMENT_HEAD) {
-      const isFinanceOrHrHOD =
-        req.user &&
-        req.user.department &&
-        (
-          ["5", "4", "FIN", "HR"].includes((req.user.department as any).code || "") ||
-          ["finance", "accounts", "hr", "human resources"].some(kw => (req.user.department as any).name?.toLowerCase().includes(kw))
-        );
-
-      if (!isFinanceOrHrHOD) {
-        const userDeptId = normalizeObjectId(req.user!.department);
-        query = {
-          ...query,
-          $or: [
-            { requester: req.user!._id },
-            { department: userDeptId },
-          ],
-        };
-      }
-    } else if (req.user!.role === UserRole.PROCUREMENT_MANAGER) {
-      const departmentApprovedAndAbove = [
-        RequisitionStatus.DEPARTMENT_APPROVED,
-        RequisitionStatus.PROCUREMENT_REVIEW,
-        RequisitionStatus.RFQ_GENERATION,
-        RequisitionStatus.VENDOR_BIDDING,
-        RequisitionStatus.VENDOR_ASSIGNED,
-        RequisitionStatus.PO_PENDING_APPROVAL,
-        RequisitionStatus.PO_APPROVED,
-        RequisitionStatus.HHRA_REVIEW,
-        RequisitionStatus.HHRA_APPROVED,
-        RequisitionStatus.HHRA_REJECTED,
-        RequisitionStatus.NEGOTIATION,
-        RequisitionStatus.PO_GENERATED,
-        RequisitionStatus.PO_GENERATION,
-        RequisitionStatus.VENDOR_ACKNOWLEDGED,
-        RequisitionStatus.DELIVERED,
-        RequisitionStatus.PARTIALLY_DELIVERED,
-        RequisitionStatus.INVENTORY_CONFIRMED,
-        RequisitionStatus.DEPARTMENT_CONFIRMED,
-        RequisitionStatus.COMPLETED,
-        RequisitionStatus.PAID,
-        RequisitionStatus.CANCELLED,
-      ];
-
-      query = {
-        ...query,
-        $or: [
-          { requester: req.user!._id }, // Their own requisitions (any status)
-          { status: { $in: departmentApprovedAndAbove } }, // All requisitions department approved and above
-        ],
-      };
-    }
-
     if (title) {
       query = { ...query, title: { $regex: title, $options: "i" } };
     }
@@ -431,23 +411,24 @@ export const getRequisitions = async (
 
     // Try MongoDB first
     try {
-      const total = await Requisition.countDocuments(query);
-      const requisitions = await Requisition.find(query)
+      const allMongo = await Requisition.find(query)
         .populate("requester", "firstName lastName email")
-        .populate("department", "name code")
+        .populate("department", "name code head")
         .populate("items.recommendedVendor")
-        .sort({ [sortBy]: sortOrder })
-        .skip(skip)
-        .limit(limit);
+        .sort({ [sortBy]: sortOrder });
+      const visibleMongo = allMongo.filter((requisition: any) =>
+        canAccessRequisition(req.user, requisition),
+      );
+      const requisitions = visibleMongo.slice(skip, skip + limit);
 
       res.status(200).json({
         success: true,
         data: requisitions,
         pagination: {
-          total,
+          total: visibleMongo.length,
           page,
           limit,
-          pages: Math.ceil(total / limit) || 1,
+          pages: Math.ceil(visibleMongo.length / limit) || 1,
         },
       });
       return;
@@ -460,24 +441,18 @@ export const getRequisitions = async (
         requester: true,
         department: true,
         items: true,
-        approvals: true,
+        approvals: {
+          with: {
+            approver: true,
+          },
+        },
       },
       orderBy: [desc(requisitions.createdAt)],
     });
 
-    const currentUserId = String(req.user?._id || req.user?.id || "");
-    const currentUserRole = req.user?.role;
-
-    if (currentUserRole === UserRole.STAFF) {
-      allPg = allPg.filter((r) => r.requesterId === currentUserId);
-    } else if (currentUserRole === UserRole.DEPARTMENT_HEAD) {
-      const userDeptId = normalizeObjectId(req.user?.department);
-      allPg = allPg.filter(
-        (r) =>
-          r.requesterId === currentUserId ||
-          (userDeptId && r.departmentId === userDeptId),
-      );
-    }
+    allPg = allPg.filter((requisition) =>
+      canAccessRequisition(req.user, requisition),
+    );
 
     if (title) {
       const t = title.toLowerCase();
@@ -519,6 +494,7 @@ export const getRequisitions = async (
             code: r.department.code,
           }
         : r.departmentId,
+      assignedApprover: r.assignedApproverId,
       status: r.status,
       items:
         r.items?.map((it) => ({
@@ -530,17 +506,45 @@ export const getRequisitions = async (
           uploadImage: it.uploadImage,
           units: it.units,
           UOM: it.UOM,
+          isWorkTool: it.isWorkTool,
+          workToolSubcategory: it.workToolSubcategory ? [it.workToolSubcategory] : [],
           status: it.status,
         })) || [],
       approvals:
-        r.approvals?.map((ap) => ({
-          _id: ap.id,
-          stage: ap.stage,
-          approver: ap.approverId,
-          status: ap.status,
-          comments: ap.comments,
-          timestamp: ap.timestamp,
-        })) || [],
+        r.approvals?.map((ap: any) => {
+          const approverName =
+            ap.approverName ||
+            (ap.approver
+              ? `${ap.approver.firstName || ""} ${ap.approver.lastName || ""}`.trim()
+              : "");
+          return {
+            _id: ap.id,
+            stage: ap.stage,
+            approver: ap.approver
+              ? {
+                  _id: ap.approver.id,
+                  firstName: ap.approver.firstName,
+                  lastName: ap.approver.lastName,
+                  email: ap.approver.email,
+                  name: approverName,
+                }
+              : ap.approverId,
+            approverId: ap.approverId,
+            approverName,
+            approverRole:
+              ap.stage === "Finance" || ap.stage === "HoF"
+                ? "hof"
+                : ap.stage === "HR" || ap.stage === "HHRA"
+                  ? "hhr"
+                  : ap.stage === "HOD_TOOL_COMMENT"
+                    ? "hodToolComment"
+                  : "hod",
+            status: ap.status,
+            comments: ap.comments,
+            timestamp: ap.timestamp,
+            approvedAt: ap.timestamp,
+          };
+        }) || [],
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
@@ -574,7 +578,7 @@ export const getRequisition = async (
     try {
       requisition = await Requisition.findById(reqId)
         .populate("requester", "firstName lastName email")
-        .populate("department", "name code")
+        .populate("department", "name code head")
         .populate("items.recommendedVendor")
         .populate("relatedRfqs", "title rfqNumber")
         .populate("relatedPos", "title poNumber")
@@ -601,7 +605,11 @@ export const getRequisition = async (
           requester: true,
           department: true,
           items: true,
-          approvals: true,
+          approvals: {
+            with: {
+              approver: true,
+            },
+          },
         },
       });
 
@@ -639,8 +647,10 @@ export const getRequisition = async (
               _id: pgReq.department.id,
               name: pgReq.department.name,
               code: pgReq.department.code,
+              head: pgReq.department.headId,
             }
           : pgReq.departmentId,
+        assignedApprover: pgReq.assignedApproverId,
         status: pgReq.status,
         items:
           pgReq.items?.map((it) => ({
@@ -652,6 +662,8 @@ export const getRequisition = async (
             uploadImage: it.uploadImage,
             units: it.units,
             UOM: it.UOM,
+            isWorkTool: it.isWorkTool,
+            workToolSubcategory: it.workToolSubcategory ? [it.workToolSubcategory] : [],
             status: it.status,
             departmentApprovedBy: it.departmentApprovedById,
             departmentApprovedAt: it.departmentApprovedAt,
@@ -661,56 +673,67 @@ export const getRequisition = async (
             hhraApprovedAt: it.hhraApprovedAt,
           })) || [],
         approvals:
-          pgReq.approvals?.map((ap) => ({
-            _id: ap.id,
-            stage: ap.stage,
-            approver: ap.approverId,
-            status: ap.status,
-            comments: ap.comments,
-            timestamp: ap.timestamp,
-          })) || [],
+          pgReq.approvals?.map((ap: any) => {
+            const approverName =
+              ap.approverName ||
+              (ap.approver
+                ? `${ap.approver.firstName || ""} ${ap.approver.lastName || ""}`.trim()
+                : "");
+            return {
+              _id: ap.id,
+              stage: ap.stage,
+              approver: ap.approver
+                ? {
+                    _id: ap.approver.id,
+                    firstName: ap.approver.firstName,
+                    lastName: ap.approver.lastName,
+                    email: ap.approver.email,
+                    name: approverName,
+                  }
+                : ap.approverId,
+              approverId: ap.approverId,
+              approverName,
+              approverRole:
+                ap.stage === "Finance" || ap.stage === "HoF"
+                  ? "hof"
+                  : ap.stage === "HR" || ap.stage === "HHRA"
+                    ? "hhr"
+                    : ap.stage === "HOD_TOOL_COMMENT"
+                      ? "hodToolComment"
+                    : "hod",
+              status: ap.status,
+              comments: ap.comments,
+              timestamp: ap.timestamp,
+              approvedAt: ap.timestamp,
+            };
+          }) || [],
         createdAt: pgReq.createdAt,
         updatedAt: pgReq.updatedAt,
       };
     }
 
-    // Check if user has permission to view this requisition
-    if (req.user!.role === UserRole.STAFF) {
-      const requesterId = normalizeObjectId(requisition.requester);
-      const currentUserId = normalizeObjectId(req.user!._id);
-
-      if (requesterId !== currentUserId) {
-        res.status(403).json({
-          success: false,
-          message: "Not authorized to access this requisition",
-        });
-        return;
+    let canAddToolComment = false;
+    if (
+      requisition.status === RequisitionStatus.HOD_TOOL_COMMENT &&
+      hasActiveWorkToolItems(requisition.items)
+    ) {
+      const toolCategory = getWorkToolCategory(
+        requisition.items.find(isActiveWorkToolItem),
+      );
+      if (toolCategory) {
+        const categoryHead = await resolveWorkToolDepartmentHead(toolCategory);
+        canAddToolComment =
+          !("error" in categoryHead) &&
+          categoryHead.departmentHeadId === normalizeObjectId(getUserId(req.user));
       }
-    } else if (req.user!.role === UserRole.DEPARTMENT_HEAD) {
-      const requesterId = normalizeObjectId(requisition.requester);
-      const currentUserId = normalizeObjectId(req.user!._id);
-      const requisitionDeptId = normalizeObjectId(requisition.department);
-      const userDeptId = normalizeObjectId(req.user!.department);
+    }
 
-      const isFinanceOrHrHOD =
-        req.user &&
-        req.user.department &&
-        (
-          ["5", "4", "FIN", "HR"].includes((req.user.department as any).code || "") ||
-          ["finance", "accounts", "hr", "human resources"].some(kw => (req.user.department as any).name?.toLowerCase().includes(kw))
-        );
-
-      if (
-        !isFinanceOrHrHOD &&
-        requesterId !== currentUserId &&
-        requisitionDeptId !== userDeptId
-      ) {
-        res.status(403).json({
-          success: false,
-          message: "Not authorized to access this requisition",
-        });
-        return;
-      }
+    if (!canAddToolComment && !canAccessRequisition(req.user, requisition)) {
+      res.status(403).json({
+        success: false,
+        message: "Not authorized to access this requisition",
+      });
+      return;
     }
 
     // DEPRECATED: Vendor role removed
@@ -744,29 +767,9 @@ export const getRequisition = async (
       (requisition.department as any)?.code ||
       "N/A";
 
-    const relatedRequests = [
-      {
-        _id: requisition._id.toString(),
-        title: requisition.title || "Request",
-        department: departmentName,
-      },
-    ];
-
-    const relatedRfqs = Array.isArray((requisition as any).relatedRfqs)
-      ? (requisition as any).relatedRfqs.map((item: any) => ({
-          _id: item._id?.toString?.() || item.toString(),
-          title: item.title || item.rfqNumber || "RFQ",
-          department: departmentName,
-        }))
-      : [];
-
-    const relatedPos = Array.isArray((requisition as any).relatedPos)
-      ? (requisition as any).relatedPos.map((item: any) => ({
-          _id: item._id?.toString?.() || item.toString(),
-          title: item.title || "",
-          department: departmentName,
-        }))
-      : [];
+    const relatedProcurement = await getRelatedProcurementItems({
+      requisitionId: reqId,
+    });
 
     res.status(200).json({
       success: true,
@@ -774,12 +777,27 @@ export const getRequisition = async (
         ...(typeof requisition.toObject === "function"
           ? requisition.toObject()
           : requisition),
-        related: {
-          requests: relatedRequests,
-          rfqs: relatedRfqs,
-          pos: relatedPos,
-        },
+        related: relatedProcurement,
+        canAddToolComment,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getRelatedRequisitionItems = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const reqId = String(req.params.id);
+    const related = await getRelatedProcurementItems({ requisitionId: reqId });
+    res.status(200).json({
+      success: true,
+      data: related,
     });
   } catch (error) {
     next(error);
@@ -788,7 +806,7 @@ export const getRequisition = async (
 
 // @desc    Create requisition
 // @route   POST /api/requisitions
-// @access  Private/Staff
+// @access  Private
 export const createRequisition = async (
   req: Request,
   res: Response,
@@ -874,6 +892,9 @@ export const createRequisition = async (
       }
     }
 
+    const workToolCategoryError = validateWorkToolCategories(items);
+    if (workToolCategoryError) errors["items.workToolSubcategory"] = workToolCategoryError;
+
     if (Object.keys(errors).length > 0) {
       res
         .status(400)
@@ -883,20 +904,21 @@ export const createRequisition = async (
 
     await applyUploadedImagesToItems(req, items);
 
+    normalizeServiceWorkToolFields(items);
+
     const requesterId = getUserId(req.user);
     const deptHeadId = normalizeObjectId(chosenDepartment?.head);
     const userDeptId = normalizeObjectId(req.user?.department);
     const chosenDeptId = normalizeObjectId(chosenDepartment?._id);
-
     const isRequesterHoD =
       (deptHeadId && deptHeadId === requesterId) ||
-      (req.user!.role === UserRole.DEPARTMENT_HEAD && userDeptId && chosenDeptId && userDeptId === chosenDeptId) ||
-      (req.user!.role === UserRole.HEAD_OF_FINANCE && (chosenDepartment?.code === "5" || chosenDepartment?.code === "FIN")) ||
-      (req.user!.role === UserRole.HEAD_OF_HR && (chosenDepartment?.code === "4" || chosenDepartment?.code === "HR")) ||
-      (req.user!.role === UserRole.HHRA && (chosenDepartment?.code === "4" || chosenDepartment?.code === "HR")) ||
-      (req.user!.role === UserRole.DEPARTMENT_HEAD && !chosenDepartment?.head);
+      (!deptHeadId &&
+        req.user!.role === UserRole.DEPARTMENT_HEAD &&
+        userDeptId &&
+        chosenDeptId &&
+        userDeptId === chosenDeptId);
 
-    const hasWorkTool = items && Array.isArray(items) && items.some((item: any) => item.isWorkTool);
+    const hasWorkTool = hasActiveWorkToolItems(items);
 
     let initialStatus = req.body.status === "draft" ? RequisitionStatus.DRAFT : RequisitionStatus.SUBMITTED;
     const initialApprovals: any[] = [];
@@ -904,19 +926,25 @@ export const createRequisition = async (
 
     if (isRequesterHoD) {
       // Auto-approve at department level if requester is HoD himself
-      initialStatus = hasWorkTool ? RequisitionStatus.HR_REVIEW : RequisitionStatus.DEPARTMENT_APPROVED;
+      initialStatus = hasWorkTool
+        ? RequisitionStatus.HR_REVIEW
+        : RequisitionStatus.DEPARTMENT_APPROVED;
       initialRequestApprovedAt = new Date();
       if (items && Array.isArray(items)) {
         items.forEach((item: any) => {
           item.departmentApprovedBy = requesterId;
           item.departmentApprovedAt = new Date();
           item.departmentComments = "Auto-approved at department level (requester is Head of Department)";
-          item.status = item.isWorkTool ? ItemStatus.HR_REVIEW : ItemStatus.DEPARTMENT_APPROVED;
+          item.status = isWorkToolItem(item)
+            ? ItemStatus.HR_REVIEW
+            : ItemStatus.DEPARTMENT_APPROVED;
         });
       }
+      const approverName = req.user ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() : undefined;
       initialApprovals.push({
         stage: "Department",
         approver: requesterId,
+        approverName,
         approverRole: "hod",
         status: "approved",
         comments: "Auto-approved at department level (requester is Head of Department)",
@@ -941,6 +969,7 @@ export const createRequisition = async (
       requester: any;
       department: any;
       status: RequisitionStatus;
+      assignedApprover?: string;
       requestApprovedAt?: Date;
       approvals?: any[];
     } = {
@@ -987,41 +1016,11 @@ export const createRequisition = async (
         details: "Auto-approved at department level because requester is Head of Department",
       });
 
-      if (hasWorkTool) {
-        // Notify HHRA that requisition contains work tools awaiting HR review
-        await notifications.emit("notify", {
-          type: "requisition_status_changed",
-          actorId: requesterId?.toString() || "",
-          targetRoles: [UserRole.HEAD_OF_HR, UserRole.HHRA, UserRole.HR_APPROVER],
-          resource: {
-            kind: "requisition",
-            id: newRequisition._id.toString(),
-          },
-          metadata: {
-            resourceNumber: newRequisition.requisitionNumber,
-            title: newRequisition.title,
-            newStatus: newRequisition.status,
-            message: "Requisition containing working tools is awaiting HHRA approval",
-          },
-        });
-      } else {
-        // Notify Head of Finance that requisition is ready for Finance approval
-        await notifications.emit("notify", {
-          type: "requisition_status_changed",
-          actorId: requesterId?.toString() || "",
-          targetRoles: [UserRole.HEAD_OF_FINANCE, UserRole.FINANCE_MANAGER],
-          resource: {
-            kind: "requisition",
-            id: newRequisition._id.toString(),
-          },
-          metadata: {
-            resourceNumber: newRequisition.requisitionNumber,
-            title: newRequisition.title,
-            newStatus: newRequisition.status,
-            message: "Requisition approved by Department Head and is awaiting Head of Finance approval",
-          },
-        });
-      }
+      await notifyRequisitionStatusChanged(
+        newRequisition,
+        requesterId?.toString() || "",
+        `Requisition was automatically approved and moved to ${newRequisition.status}.`,
+      );
     } else {
       // Record the creation in history
       await RequisitionHistory.create({
@@ -1200,6 +1199,10 @@ export const updateRequisition = async (
           // RFQ workflow uses Vendor Master for vendor selection
         }
       }
+      const workToolCategoryError = validateWorkToolCategories(items);
+      if (workToolCategoryError) {
+        errors["items.workToolSubcategory"] = workToolCategoryError;
+      }
     }
 
     if (Object.keys(errors).length > 0) {
@@ -1221,6 +1224,7 @@ export const updateRequisition = async (
         items.forEach((item: any) => {
           delete item.recommendedVendor;
         });
+        normalizeServiceWorkToolFields(items);
       }
       updateData.items = items;
     }
@@ -1402,7 +1406,7 @@ export const getEligibleApprovers = async (
 
 // @desc    Submit requisition for approval (removes from draft status)
 // @route   PUT /api/requisitions/:id/submit
-// @access  Private/Staff
+// @access  Private/Requester
 export const submitRequisition = async (
   req: Request,
   res: Response,
@@ -1436,6 +1440,12 @@ export const submitRequisition = async (
       return;
     }
 
+    const workToolCategoryError = validateWorkToolCategories(requisition.items);
+    if (workToolCategoryError) {
+      res.status(400).json({ success: false, message: workToolCategoryError });
+      return;
+    }
+
     const requesterId = getUserId(req.user);
     const department = await Department.findById(requisition.department);
     const deptHeadId = normalizeObjectId(department?.head);
@@ -1444,29 +1454,35 @@ export const submitRequisition = async (
 
     const isRequesterHoD =
       (deptHeadId && deptHeadId === requesterId) ||
-      (req.user!.role === UserRole.DEPARTMENT_HEAD && userDeptId && chosenDeptId && userDeptId === chosenDeptId) ||
-      (req.user!.role === UserRole.HEAD_OF_FINANCE && (department?.code === "5" || department?.code === "FIN")) ||
-      (req.user!.role === UserRole.HEAD_OF_HR && (department?.code === "4" || department?.code === "HR")) ||
-      (req.user!.role === UserRole.HHRA && (department?.code === "4" || department?.code === "HR")) ||
-      (req.user!.role === UserRole.DEPARTMENT_HEAD && !department?.head);
+      (!deptHeadId &&
+        req.user!.role === UserRole.DEPARTMENT_HEAD &&
+        userDeptId &&
+        chosenDeptId &&
+        userDeptId === chosenDeptId);
 
-    const hasWorkTool = requisition.items && Array.isArray(requisition.items) && requisition.items.some((item: any) => item.isWorkTool);
+    const hasWorkTool = hasActiveWorkToolItems(requisition.items);
 
     if (isRequesterHoD) {
-      requisition.status = hasWorkTool ? RequisitionStatus.HR_REVIEW : RequisitionStatus.DEPARTMENT_APPROVED;
+      requisition.status = hasWorkTool
+        ? RequisitionStatus.HR_REVIEW
+        : RequisitionStatus.DEPARTMENT_APPROVED;
       requisition.requestApprovedAt = new Date();
       if (requisition.items && Array.isArray(requisition.items)) {
         requisition.items.forEach((item: any) => {
           item.departmentApprovedBy = requesterId;
           item.departmentApprovedAt = new Date();
           item.departmentComments = "Auto-approved at department level (requester is Head of Department)";
-          item.status = item.isWorkTool ? ItemStatus.HR_REVIEW : ItemStatus.DEPARTMENT_APPROVED;
+          item.status = isWorkToolItem(item)
+            ? ItemStatus.HR_REVIEW
+            : ItemStatus.DEPARTMENT_APPROVED;
         });
       }
       if (!requisition.approvals) requisition.approvals = [];
+      const approverName = req.user ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() : undefined;
       requisition.approvals.push({
         stage: "Department",
         approver: requesterId,
+        approverName,
         approverRole: "hod",
         status: "approved",
         comments: "Auto-approved at department level (requester is Head of Department)",
@@ -1481,33 +1497,11 @@ export const submitRequisition = async (
         details: "Auto-approved at department level because requester is Head of Department",
       });
 
-      if (hasWorkTool) {
-        await notifications.emit("notify", {
-          type: "requisition_status_changed",
-          actorId: requesterId?.toString() || "",
-          targetRoles: [UserRole.HEAD_OF_HR, UserRole.HHRA, UserRole.HR_APPROVER],
-          resource: { kind: "requisition", id: requisition._id.toString() },
-          metadata: {
-            resourceNumber: requisition.requisitionNumber,
-            title: requisition.title,
-            newStatus: requisition.status,
-            message: "Requisition containing working tools is awaiting HHRA approval",
-          },
-        });
-      } else {
-        await notifications.emit("notify", {
-          type: "requisition_status_changed",
-          actorId: requesterId?.toString() || "",
-          targetRoles: [UserRole.HEAD_OF_FINANCE, UserRole.FINANCE_MANAGER],
-          resource: { kind: "requisition", id: requisition._id.toString() },
-          metadata: {
-            resourceNumber: requisition.requisitionNumber,
-            title: requisition.title,
-            newStatus: requisition.status,
-            message: "Requisition approved by Department Head and is awaiting Head of Finance approval",
-          },
-        });
-      }
+      await notifyRequisitionStatusChanged(
+        requisition,
+        requesterId?.toString() || "",
+        `Requisition was automatically approved and moved to ${requisition.status}.`,
+      );
 
       res.status(200).json({
         success: true,
@@ -1517,42 +1511,39 @@ export const submitRequisition = async (
       return;
     }
 
-    const { assignedApprover, approverId } = req.body;
-    const selectedApproverId = assignedApprover || approverId;
-
-    let targetApproverUser: any = null;
-
-    if (selectedApproverId) {
-      targetApproverUser = await db.query.users.findFirst({ where: eq(users.id, String(String(selectedApproverId))) });
-      if (!targetApproverUser || !targetApproverUser.isActive) {
-        res.status(400).json({
-          success: false,
-          message: "Selected approver is invalid or inactive",
-        });
-        return;
-      }
-    } else {
-      // PM-generated requests require selecting an eligible HOD (Requirement C5)
-      if (req.user!.role === UserRole.PROCUREMENT_MANAGER) {
-        res.status(400).json({
-          success: false,
-          message: "Procurement Manager must select an eligible department approver before submitting",
-        });
-        return;
-      }
-
-      // Fallback to department.head for legacy / staff requests
-      const department = await Department.findById(requisition.department);
-      if (department?.head) {
-        targetApproverUser = await db.query.users.findFirst({ where: eq(users.id, String(String(department.head))) });
-      }
+    const targetApproverId = normalizeObjectId(department?.head);
+    if (!targetApproverId) {
+      res.status(400).json({
+        success: false,
+        message: "The requisition department does not have an assigned Head of Department",
+      });
+      return;
+    }
+    const targetApproverUser = await db.query.users.findFirst({
+      where: eq(users.id, targetApproverId),
+    });
+    if (!targetApproverUser || !targetApproverUser.isActive) {
+      res.status(400).json({
+        success: false,
+        message: "The requisition department Head of Department is inactive or unavailable",
+      });
+      return;
+    }
+    const selectedApproverId = req.body.assignedApprover || req.body.approverId;
+    if (
+      selectedApproverId &&
+      normalizeObjectId(selectedApproverId) !== targetApproverId
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "Requisitions must be routed to the Head of Department for their department",
+      });
+      return;
     }
 
     // Update status to submitted
     requisition.status = RequisitionStatus.SUBMITTED;
-    if (targetApproverUser) {
-      requisition.assignedApprover = targetApproverUser.id;
-    }
+    requisition.assignedApprover = targetApproverUser.id;
 
     // Initialize approvals array if it doesn't exist
     if (!requisition.approvals) {
@@ -1560,14 +1551,13 @@ export const submitRequisition = async (
     }
 
     // Add pending approval assignment
-    if (targetApproverUser) {
-      requisition.approvals.push({
-        stage: "Department",
-        approver: targetApproverUser.id,
-        status: "pending",
-        timestamp: new Date(),
-      });
-    }
+    requisition.approvals.push({
+      stage: "Department",
+      approver: targetApproverUser.id,
+      approverName: `${targetApproverUser.firstName || ""} ${targetApproverUser.lastName || ""}`.trim(),
+      status: "pending",
+      timestamp: new Date(),
+    });
 
     await requisition.save();
 
@@ -1577,7 +1567,7 @@ export const submitRequisition = async (
       action: "submitted",
       status: requisition.status,
       user: (req.user as any)._id.toString(),
-      details: `Requisition submitted for approval${targetApproverUser ? ` to ${targetApproverUser.firstName} ${targetApproverUser.lastName}` : ""}`,
+      details: `Requisition submitted for approval to ${targetApproverUser.firstName} ${targetApproverUser.lastName}`,
     });
 
     // Notify department head / assigned approver
@@ -1615,66 +1605,30 @@ export const departmentApproval = async (
       return;
     }
 
-    const user = await db.query.users.findFirst({ where: eq(users.id, String(req.user!._id)), with: { department: true } });
-    const isFinanceHOD =
-      user &&
-      (user.role === UserRole.HEAD_OF_FINANCE ||
-        (user.role === UserRole.DEPARTMENT_HEAD &&
-          user.department &&
-          ((user.department as any).code === "5" ||
-            (user.department as any).code === "FIN" ||
-            (user.department as any).name?.toLowerCase().includes("finance") ||
-            (user.department as any).name?.toLowerCase().includes("accounts"))));
-
-    const isHrHOD =
-      user &&
-      (user.role === UserRole.HEAD_OF_HR ||
-        user.role === UserRole.HHRA ||
-        (user.role === UserRole.DEPARTMENT_HEAD &&
-          user.department &&
-          ((user.department as any).code === "4" ||
-            (user.department as any).code === "HR" ||
-            (user.department as any).name?.toLowerCase().includes("hr") ||
-            (user.department as any).name?.toLowerCase().includes("human resources"))));
+    if (
+      status !== "approved" &&
+      status !== "rejected"
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "Status must be either approved or rejected",
+      });
+      return;
+    }
 
     const isAdmin =
       req.user!.role === UserRole.ADMIN || req.user!.role === UserRole.SUPER_ADMIN;
 
     const currentUserId = (req.user as any)._id.toString();
-
-    let isAuthorizedApprover = false;
-    let approvalStage = "Department";
-    let approverRole = "hod";
-
-    if (isFinanceHOD) {
-      isAuthorizedApprover = true;
-      approvalStage = "Finance";
-      approverRole = "hof";
-    } else if (isHrHOD) {
-      isAuthorizedApprover = true;
-      approvalStage = "HR";
-      approverRole = "hhr";
-    } else if (isAdmin) {
-      isAuthorizedApprover = true;
-      approvalStage = "Department";
-      approverRole = "hod";
-    } else if (requisition.assignedApprover && requisition.assignedApprover.toString() === currentUserId) {
-      isAuthorizedApprover = true;
-      approvalStage = "Department";
-      approverRole = "hod";
-    } else {
-      const department = await Department.findById(requisition.department);
-      const deptHeadId = normalizeObjectId(department?.head);
-      if (
-        deptHeadId === currentUserId ||
-        (req.user!.role === UserRole.DEPARTMENT_HEAD &&
-          normalizeObjectId(req.user!.department) === normalizeObjectId(requisition.department))
-      ) {
-        isAuthorizedApprover = true;
-        approvalStage = "Department";
-        approverRole = "hod";
-      }
-    }
+    const department = await Department.findById(requisition.department);
+    const deptHeadId = normalizeObjectId(department?.head);
+    const isAuthorizedApprover =
+      isAdmin ||
+      deptHeadId === currentUserId ||
+      (!deptHeadId &&
+        req.user!.role === UserRole.DEPARTMENT_HEAD &&
+        normalizeObjectId(req.user!.department) ===
+          normalizeObjectId(requisition.department));
 
     if (!isAuthorizedApprover) {
       res.status(403).json({
@@ -1692,6 +1646,41 @@ export const departmentApproval = async (
       return;
     }
 
+    const allowedApprovalStatuses = [
+      RequisitionStatus.SUBMITTED,
+      RequisitionStatus.DEPARTMENT_APPROVED,
+      RequisitionStatus.HR_REVIEW,
+      RequisitionStatus.DEPARTMENT_REJECTED,
+    ];
+
+    if (
+      status === "approved" &&
+      !allowedApprovalStatuses.includes(requisition.status as RequisitionStatus)
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "Only submitted requisitions can be approved or rejected by the department Head of Department",
+      });
+      return;
+    }
+
+    const allowedRejectionStatuses = [
+      RequisitionStatus.SUBMITTED,
+      RequisitionStatus.DEPARTMENT_APPROVED,
+      RequisitionStatus.HR_REVIEW,
+    ];
+
+    if (
+      status === "rejected" &&
+      !allowedRejectionStatuses.includes(requisition.status as RequisitionStatus)
+    ) {
+      res.status(400).json({
+        success: false,
+        message: "Only submitted requisitions can be approved or rejected by the department Head of Department",
+      });
+      return;
+    }
+
     // Make sure the approvals array exists
     if (!requisition.approvals) {
       requisition.approvals = [];
@@ -1701,19 +1690,25 @@ export const departmentApproval = async (
 
     // Update or add approval record
     const stageIndex = requisition.approvals.findIndex(
-      (a: any) => a.stage === approvalStage || a.approverRole === approverRole,
+      (a: any) => a.stage === "Department" || a.approverRole === "hod",
     );
+
+    const approverName = req.user
+      ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim()
+      : undefined;
 
     if (stageIndex !== -1) {
       requisition.approvals[stageIndex].status = status;
       requisition.approvals[stageIndex].approver = (req.user as any)._id;
+      requisition.approvals[stageIndex].approverName = approverName;
       requisition.approvals[stageIndex].comments = cleanComment;
       requisition.approvals[stageIndex].timestamp = new Date();
     } else {
       requisition.approvals.push({
-        stage: approvalStage,
+        stage: "Department",
         approver: (req.user as any)._id,
-        approverRole,
+        approverName,
+        approverRole: "hod",
         status: status,
         comments: cleanComment,
         timestamp: new Date(),
@@ -1723,44 +1718,19 @@ export const departmentApproval = async (
     // Update requisition status based on approval status
     if (status === "approved") {
       requisition.requestApprovedAt = new Date();
-
-      if (approverRole === "hod") {
-        const hasWorkTool = requisition.items?.some((i: any) => i.isWorkTool && i.status !== ItemStatus.CANCELLED);
-        if (hasWorkTool) {
-          requisition.items.forEach((item: any) => {
-            if (item.isWorkTool && item.status === ItemStatus.PENDING) {
-              item.status = ItemStatus.HR_REVIEW;
-            } else if (!item.isWorkTool && item.status === ItemStatus.PENDING) {
-              item.status = ItemStatus.DEPARTMENT_APPROVED;
-            }
-          });
-          requisition.status = RequisitionStatus.HR_REVIEW;
-        } else {
-          requisition.items.forEach((item: any) => {
-            if (item.status === ItemStatus.PENDING) {
-              item.status = ItemStatus.DEPARTMENT_APPROVED;
-            }
-          });
-          requisition.status = RequisitionStatus.DEPARTMENT_APPROVED;
+      requisition.items.forEach((item: any) => {
+        if (item.status === ItemStatus.PENDING) {
+          item.status = isWorkToolItem(item)
+            ? ItemStatus.HR_REVIEW
+            : ItemStatus.DEPARTMENT_APPROVED;
+          item.departmentApprovedBy = (req.user as any)._id;
+          item.departmentApprovedAt = new Date();
+          if (cleanComment) item.departmentComments = cleanComment;
         }
-      } else if (approverRole === "hhr") {
-        requisition.items.forEach((item: any) => {
-          if (item.isWorkTool && (item.status === ItemStatus.HR_REVIEW || item.status === ItemStatus.PENDING)) {
-            item.status = ItemStatus.HR_APPROVED;
-            item.hrApprovedBy = (req.user as any)._id;
-            item.hrApprovedAt = new Date();
-          }
-        });
-        await updateRequisitionStatusFromItems(requisition);
-      } else {
-        // HoF or Admin approval
-        requisition.items.forEach((item: any) => {
-          if (item.status === ItemStatus.PENDING) {
-            item.status = item.isWorkTool ? ItemStatus.HR_APPROVED : ItemStatus.DEPARTMENT_APPROVED;
-          }
-        });
-        requisition.status = RequisitionStatus.HOF_APPROVED;
-      }
+      });
+      requisition.status = hasActiveWorkToolItems(requisition.items)
+        ? RequisitionStatus.HR_REVIEW
+        : RequisitionStatus.DEPARTMENT_APPROVED;
     } else {
       requisition.status = RequisitionStatus.DEPARTMENT_REJECTED;
     }
@@ -1778,20 +1748,11 @@ export const departmentApproval = async (
       } requisition${cleanComment ? `: ${cleanComment}` : ""}`,
     });
 
-    // Notify stakeholders about department decision
-    if (status === "approved") {
-      await notifyDepartmentApproval(
-        requisition,
-        (req.user as any)._id.toString(),
-        cleanComment,
-      );
-    } else {
-      await notifyDepartmentRejection(
-        requisition,
-        (req.user as any)._id.toString(),
-        cleanComment || "Rejected by department",
-      );
-    }
+    await notifyRequisitionStatusChanged(
+      requisition,
+      (req.user as any)._id.toString(),
+      `Requisition ${status} by Department${cleanComment ? `: ${cleanComment}` : "."}`,
+    );
 
     res.status(200).json({
       success: true,
@@ -1840,31 +1801,18 @@ export const hhraApproval = async (
 ): Promise<void> => {
   try {
     const user = await db.query.users.findFirst({ where: eq(users.id, String(req.user!._id)), with: { department: true } });
-    const isFinanceHOD =
-      user &&
-      (user.role === UserRole.HEAD_OF_FINANCE ||
-        (user.role === UserRole.DEPARTMENT_HEAD &&
-          user.department &&
-          ((user.department as any).code === "5" ||
-            (user.department as any).code === "FIN" ||
-            (user.department as any).name?.toLowerCase().includes("finance") ||
-            (user.department as any).name?.toLowerCase().includes("accounts"))));
-
-    const isHrHOD =
-      user &&
-      (user.role === UserRole.HEAD_OF_HR ||
-        user.role === UserRole.HHRA ||
-        (user.role === UserRole.DEPARTMENT_HEAD &&
-          user.department &&
-          ((user.department as any).code === "4" ||
-            (user.department as any).code === "HR" ||
-            (user.department as any).name?.toLowerCase().includes("hr") ||
-            (user.department as any).name?.toLowerCase().includes("human resources"))));
-
-    if (!user || (user.role !== UserRole.HHRA && user.role !== UserRole.HR_APPROVER && user.role !== UserRole.ACCOUNTS_APPROVER && !isFinanceHOD && !isHrHOD)) {
+    if (
+      !user ||
+      ![
+        UserRole.HHRA,
+        UserRole.HEAD_OF_HR,
+        UserRole.HR_APPROVER,
+        UserRole.ACCOUNTS_APPROVER,
+      ].includes(user.role as UserRole)
+    ) {
       res.status(403).json({
         success: false,
-        message: "Only Head of Finance, Head of HR, or HHRA can perform this approval",
+        message: "Only HHRA or an HR approver can approve work-tool requisitions",
       });
       return;
     }
@@ -1877,6 +1825,14 @@ export const hhraApproval = async (
       paymentReference,
       paymentNotes,
     } = req.body;
+
+    if (paymentStatus === "fully_paid") {
+      res.status(400).json({
+        success: false,
+        message: "A requisition cannot be marked fully paid before its procurement and delivery workflow is complete",
+      });
+      return;
+    }
 
     const requisition = await Requisition.findById(req.params.id);
 
@@ -1901,6 +1857,30 @@ export const hhraApproval = async (
       return;
     }
 
+    let workToolApproverId: string | undefined;
+    if (
+      status === "approved" &&
+      paymentStatus !== "fully_paid" &&
+      hasActiveWorkToolItems(requisition.items)
+    ) {
+      const workToolCategoryError = validateWorkToolCategories(requisition.items);
+      if (workToolCategoryError) {
+        res.status(400).json({ success: false, message: workToolCategoryError });
+        return;
+      }
+      const workToolCategory = getWorkToolCategory(
+        requisition.items.find(isActiveWorkToolItem),
+      );
+      const workToolRoute = workToolCategory
+        ? await resolveWorkToolDepartmentHead(workToolCategory)
+        : { error: "A work tool category is required before HoD routing" };
+      if ("error" in workToolRoute) {
+        res.status(400).json({ success: false, message: workToolRoute.error });
+        return;
+      }
+      workToolApproverId = workToolRoute.departmentHeadId;
+    }
+
     // Ensure approvals array exists
     if (!requisition.approvals) {
       requisition.approvals = [];
@@ -1918,6 +1898,10 @@ export const hhraApproval = async (
       );
     }
 
+    const approverName = req.user
+      ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim()
+      : undefined;
+
     if (approvalIndex === -1) {
       // Create a new HHRA approval record if none exists
       const userId = getUserId(req.user);
@@ -1925,6 +1909,7 @@ export const hhraApproval = async (
         requisition.approvals.push({
           stage: "HHRA",
           approver: userId,
+          approverName,
           status: status,
           comments: comments,
           timestamp: new Date(),
@@ -1937,6 +1922,7 @@ export const hhraApproval = async (
       const userId = getUserId(req.user);
       if (userId) {
         requisition.approvals[approvalIndex].approver = userId;
+        requisition.approvals[approvalIndex].approverName = approverName;
       }
       requisition.approvals[approvalIndex].timestamp = new Date();
     }
@@ -1965,7 +1951,7 @@ export const hhraApproval = async (
       if (status === "approved") {
         if (requisition.items && Array.isArray(requisition.items)) {
           requisition.items.forEach((item: any) => {
-            if (item.isWorkTool && item.status !== ItemStatus.CANCELLED) {
+            if (isActiveWorkToolItem(item)) {
               item.status = ItemStatus.HR_APPROVED;
               item.hrApprovedBy = (req.user as any)._id;
               item.hrApprovedAt = new Date();
@@ -1973,11 +1959,27 @@ export const hhraApproval = async (
             }
           });
         }
-        requisition.status = RequisitionStatus.HR_APPROVED;
+        requisition.status = RequisitionStatus.HOD_TOOL_COMMENT;
+        if (workToolApproverId) {
+          requisition.assignedApprover = workToolApproverId;
+          const toolCommentApproval = requisition.approvals.find(
+            (approval: any) => approval.stage === "HOD_TOOL_COMMENT",
+          );
+          const pendingApproval = {
+            stage: "HOD_TOOL_COMMENT",
+            approver: workToolApproverId,
+            approverRole: "hodToolComment",
+            status: "pending",
+            comments: "Awaiting the work tool category HoD's required comment",
+            timestamp: new Date(),
+          };
+          if (toolCommentApproval) Object.assign(toolCommentApproval, pendingApproval);
+          else requisition.approvals.push(pendingApproval as any);
+        }
       } else {
         if (requisition.items && Array.isArray(requisition.items)) {
           requisition.items.forEach((item: any) => {
-            if (item.isWorkTool && item.status !== ItemStatus.CANCELLED) {
+            if (isActiveWorkToolItem(item)) {
               item.status = ItemStatus.HR_REJECTED;
               item.hrRejectedBy = (req.user as any)._id;
               item.hrRejectedAt = new Date();
@@ -2031,26 +2033,15 @@ export const hhraApproval = async (
         : null,
     ].filter(Boolean) as string[];
 
-    await notifications.emit("notify", {
-      type: "requisition_status_changed",
-      actorId: getUserId(req.user)?.toString() || "",
-      targetUserIds,
-      resource: {
-        kind: "requisition",
-        id: requisition._id ? requisition._id.toString() : "",
-      },
-      metadata: {
-        resourceNumber: requisition.requisitionNumber,
-        title: requisition.title,
-        newStatus: requisition.status,
-        message:
-          paymentStatus === "fully_paid"
-            ? "Payment has been processed for this requisition"
-            : `Requisition has been ${
-                status === "approved" ? "approved" : "rejected"
-              } by HHRA${comments ? ` with comment: ${comments}` : ""}`,
-      },
-    });
+    await notifyRequisitionStatusChanged(
+      requisition,
+      getUserId(req.user)?.toString() || "",
+      paymentStatus === "fully_paid"
+        ? "Payment has been processed for this requisition."
+        : requisition.status === RequisitionStatus.HOD_TOOL_COMMENT
+        ? "HHRA approved the work tools; the HoD for the selected work tool category must add the required comment."
+          : `Requisition has been ${status === "approved" ? "approved" : "rejected"} by HHRA${comments ? ` with comment: ${comments}` : ""}`,
+    );
 
     res.status(200).json({
       success: true,
@@ -2061,204 +2052,104 @@ export const hhraApproval = async (
   }
 };
 
-// @desc    Head of Finance approve or reject requisition
-// @route   PUT /api/requisitions/:id/hof-approval
-// @route   PUT /api/requisitions/:id/finance-approval
-// @access  Private/HeadOfFinance/Admin
-export const hofApproval = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> => {
+// @desc    Record the required department HoD comment after HHRA tool approval
+// @route   PUT /api/requisitions/:id/hod-tool-comment
+// @access  Private/DepartmentHead
+export const hodToolComment = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { id } = req.params;
-    const { status = "approved", comments } = req.body;
-    const userId = getUserId(req.user);
-
-    if (status !== "approved" && status !== "rejected") {
-      res.status(400).json({
-        success: false,
-        message: "Status must be either approved or rejected",
-      });
+    const comments = typeof req.body.comments === "string" ? req.body.comments.trim() : "";
+    if (!comments) {
+      res.status(400).json({ success: false, message: "A Head of Department tool comment is required" });
       return;
     }
 
-    const requisition = await Requisition.findById(id);
+    const requisition = await Requisition.findById(req.params.id);
     if (!requisition) {
       res.status(404).json({ success: false, message: "Requisition not found" });
       return;
     }
-
-    if (requisition.status === RequisitionStatus.CANCELLED) {
-      res.status(400).json({
-        success: false,
-        message: "Cannot approve a cancelled requisition",
-      });
+    if (requisition.status !== RequisitionStatus.HOD_TOOL_COMMENT) {
+      res.status(400).json({ success: false, message: "Requisition is not awaiting a Head of Department tool comment" });
+      return;
+    }
+    if (!hasActiveWorkToolItems(requisition.items)) {
+      res.status(400).json({ success: false, message: "Only work-tool requisitions require this comment" });
       return;
     }
 
-    // Role check: Head of Finance, Finance Manager, Admin, SuperAdmin, or HoD of Finance
-    const currentUser = req.user as any;
-    const isAdmin =
-      currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.SUPER_ADMIN;
-    const isHoF =
-      currentUser.role === UserRole.HEAD_OF_FINANCE ||
-      currentUser.role === UserRole.FINANCE_MANAGER ||
-      (currentUser.department &&
-        ((currentUser.department.code === "5" ||
-          currentUser.department.code === "FIN" ||
-          currentUser.department.name?.toLowerCase().includes("finance") ||
-          currentUser.department.name?.toLowerCase().includes("accounts")) &&
-         currentUser.role === UserRole.DEPARTMENT_HEAD)) ||
-      currentUser.designation === "Head, Finance";
+    const workToolCategory = getWorkToolCategory(
+      requisition.items.find(isActiveWorkToolItem),
+    );
+    const workToolRoute = workToolCategory
+      ? await resolveWorkToolDepartmentHead(workToolCategory)
+      : { error: "A work tool category is required before HoD routing" };
+    if ("error" in workToolRoute) {
+      res.status(400).json({ success: false, message: workToolRoute.error });
+      return;
+    }
 
-    if (!isAdmin && !isHoF) {
+    const currentUserId = getUserId(req.user);
+    if (
+      !currentUserId ||
+      workToolRoute.departmentHeadId !== normalizeObjectId(currentUserId)
+    ) {
       res.status(403).json({
         success: false,
-        message: "Only Head of Finance or Admin can perform Finance approval on requisitions",
+        message: "Only the HoD for the selected work tool category can add this comment",
       });
       return;
     }
 
-    const hasWorkTools = requisition.items?.some(
-      (item: any) => item.isWorkTool && item.status !== ItemStatus.CANCELLED,
+    const hasHhraApproval = requisition.approvals?.some((approval: any) =>
+      (approval.stage === "HHRA" || approval.stage === "HR" || approval.approverRole === "hhr") && approval.status === "approved",
     );
-
-    // Flow validation:
-    // If request contains working tools: must have HHRA approval first
-    // If request has NO working tools: must have Department Head approval first
-    if (status === "approved") {
-      if (hasWorkTools) {
-        const hasPendingHrTools = requisition.items?.some(
-          (item: any) => item.isWorkTool && item.status === ItemStatus.HR_REVIEW,
-        );
-        const allWorkToolsApproved = requisition.items
-          ?.filter((item: any) => item.isWorkTool && item.status !== ItemStatus.CANCELLED)
-          ?.every((item: any) => item.status === ItemStatus.HR_APPROVED);
-        const hasHrApprovalRecord = requisition.approvals?.some(
-          (a: any) => (a.stage === "HR" || a.stage === "HHRA" || a.approverRole === "hhr") && a.status === "approved",
-        );
-
-        if (hasPendingHrTools || (!allWorkToolsApproved && !hasHrApprovalRecord)) {
-          res.status(400).json({
-            success: false,
-            message:
-              "Requisition contains working tools and must be approved by HHRA / Head of HR before Head of Finance approval",
-          });
-          return;
-        }
-      } else {
-        const hasDeptApprovalRecord = requisition.approvals?.some(
-          (a: any) => (a.stage === "Department" || a.approverRole === "hod") && a.status === "approved",
-        );
-        const isDeptApproved =
-          requisition.status === RequisitionStatus.DEPARTMENT_APPROVED || hasDeptApprovalRecord;
-        const hasPendingItems = requisition.items?.some(
-          (item: any) => item.status === ItemStatus.PENDING,
-        );
-
-        if (!isDeptApproved || hasPendingItems) {
-          res.status(400).json({
-            success: false,
-            message:
-              "Requisition must be approved by the Department Head before Head of Finance approval",
-          });
-          return;
-        }
-      }
+    if (!hasHhraApproval) {
+      res.status(400).json({ success: false, message: "HHRA approval is required before the HoD tool comment" });
+      return;
     }
 
-    if (!requisition.approvals) {
-      requisition.approvals = [];
-    }
-
-    const cleanComment = typeof comments === "string" && comments.trim() ? comments.trim() : undefined;
-
-    const existingIndex = requisition.approvals.findIndex(
-      (a: any) => a.stage === "Finance" || a.approverRole === "hof",
-    );
-
-    if (existingIndex !== -1) {
-      requisition.approvals[existingIndex].status = status;
-      requisition.approvals[existingIndex].approver = userId!;
-      requisition.approvals[existingIndex].comments = cleanComment;
-      requisition.approvals[existingIndex].timestamp = new Date();
-    } else {
-      requisition.approvals.push({
-        stage: "Finance",
-        approver: userId!,
-        approverRole: "hof",
-        status: status,
-        comments: cleanComment,
-        timestamp: new Date(),
-      } as any);
-    }
-
-    if (status === "approved") {
-      requisition.status = RequisitionStatus.HOF_APPROVED;
-      requisition.hofApprovedAt = new Date();
-      requisition.hofApprovedBy = userId!;
-    } else {
-      requisition.status = RequisitionStatus.HOF_REJECTED;
-      requisition.hofRejectedAt = new Date();
-      requisition.hofRejectedBy = userId!;
-    }
-
+    if (!requisition.approvals) requisition.approvals = [];
+    const approverName = req.user ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() : undefined;
+    requisition.approvals.push({
+      stage: "HOD_TOOL_COMMENT", approver: currentUserId, approverName,
+      approverRole: "hodToolComment", status: "commented", comments, timestamp: new Date(),
+    } as any);
+    requisition.status = RequisitionStatus.DEPARTMENT_APPROVED;
     await requisition.save();
 
     await requisitionHistoryModel.create({
-      requisition: requisition._id,
-      action: status === "approved" ? "hof_approved" : "hof_rejected",
-      status: requisition.status,
-      user: userId!.toString(),
-      details: `Head of Finance ${status === "approved" ? "approved" : "rejected"} requisition${
-        cleanComment ? `: ${cleanComment}` : ""
-      }`,
+      requisition: requisition._id, action: "hod_tool_comment_added", status: requisition.status,
+      user: currentUserId, details: `Head of Department tool comment: ${comments}`,
     });
-
-    const targetUserIds = [
-      requisition.requester?.toString(),
-    ].filter(Boolean) as string[];
-
-    await notifications.emit("notify", {
-      type: "requisition_status_changed",
-      actorId: userId!.toString(),
-      targetUserIds,
-      resource: {
-        kind: "requisition",
-        id: requisition._id ? requisition._id.toString() : "",
-      },
-      metadata: {
-        resourceNumber: requisition.requisitionNumber,
-        title: requisition.title,
-        newStatus: requisition.status,
-        message: `Requisition has been ${status === "approved" ? "approved" : "rejected"} by Head of Finance${
-          cleanComment ? `: ${cleanComment}` : ""
-        }`,
-      },
-    });
-
-    res.status(200).json({
-      success: true,
-      message: `Requisition ${status === "approved" ? "approved" : "rejected"} by Head of Finance`,
-      data: requisition,
-    });
+    await notifyRequisitionStatusChanged(
+      requisition,
+      currentUserId,
+      "The work tool category HoD added the required comment; requisition is ready for Procurement Manager review.",
+    );
+    res.status(200).json({ success: true, data: requisition });
   } catch (error) {
     next(error);
   }
+};
+
+// @desc    Legacy endpoint; Head of Finance is read-only for requisitions
+// @route   PUT /api/requisitions/:id/hof-approval
+// @route   PUT /api/requisitions/:id/finance-approval
+// @access  Private
+export const hofApproval = async (
+  _req: Request,
+  res: Response,
+): Promise<void> => {
+  res.status(403).json({
+    success: false,
+    message: "Head of Finance has read-only access to requisitions and cannot approve or reject them",
+  });
 };
 
 // @desc    Head of Finance reject requisition
 // @route   PUT /api/requisitions/:id/hof-reject
 // @access  Private/HeadOfFinance/Admin
-export const hofRejectRequisition = async (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> => {
-  req.body.status = "rejected";
-  return hofApproval(req, res, next);
-};
+export const hofRejectRequisition = hofApproval;
 
 // @desc    Upload requisition attachment
 // @route   POST /api/requisitions/:id/attachments
@@ -2338,22 +2229,7 @@ export const getRequisitionHistory = async (
       return;
     }
 
-    // Check if user has permission to view this requisition's history
-    if (
-      req.user!.role === UserRole.STAFF &&
-      requisition.requester.toString() !== (req.user as any)._id.toString()
-    ) {
-      res.status(403).json({
-        success: false,
-        message: "Not authorized to access this requisition's history",
-      });
-      return;
-    }
-
-    if (
-      req.user!.role === UserRole.DEPARTMENT_HEAD &&
-      requisition.department.toString() !== req.user!.department?.toString()
-    ) {
+    if (!canAccessRequisition(req.user, requisition)) {
       res.status(403).json({
         success: false,
         message: "Not authorized to access this requisition's history",
@@ -2419,72 +2295,29 @@ export const getRequisitionsByDepartment = async (
   try {
     const { departmentId } = req.params;
 
-    console.log("User info:", {
-      id: req.user!._id,
-      role: req.user!.role,
-      department: req.user!.department,
-      name: `${req.user!.firstName} ${req.user!.lastName}`,
-    });
-
-    console.log("Requested department:", departmentId);
-
     // Verify department exists
-    const department = await Department.findById(departmentId);
+    let department: any = null;
+    try {
+      department = await Department.findById(departmentId);
+    } catch {
+      // ignore
+    }
+    if (!department) {
+      const pgDept = await db.query.departments.findFirst({
+        where: eq(departments.id, String(departmentId)),
+      });
+      if (pgDept) {
+        department = {
+          _id: pgDept.id,
+          id: pgDept.id,
+          name: pgDept.name,
+          head: pgDept.headId,
+        };
+      }
+    }
     if (!department) {
       res.status(404).json({ success: false, message: "Department not found" });
       return;
-    }
-
-    console.log("Found department:", {
-      id: department._id?.toString(),
-      name: department.name,
-      head: department.head
-        ? typeof department.head === "object"
-          ? (department.head as any)._id?.toString()
-          : department.head.toString()
-        : "null",
-    });
-
-    const isFinanceOrHrHOD =
-      req.user &&
-      req.user.role === UserRole.DEPARTMENT_HEAD &&
-      req.user.department &&
-      (
-        ["5", "4", "FIN", "HR"].includes((req.user.department as any).code || "") ||
-        ["finance", "accounts", "hr", "human resources"].some(kw => (req.user.department as any).name?.toLowerCase().includes(kw))
-      );
-
-    // For department heads and HHRA, check if they're accessing their own department (bypassing for Finance/HR heads)
-    if (
-      (req.user!.role === UserRole.DEPARTMENT_HEAD && !isFinanceOrHrHOD) ||
-      (req.user!.role === UserRole.HHRA && !isFinanceOrHrHOD)
-    ) {
-      const userDeptId = req.user!.department?.toString();
-      const requestedDeptId = departmentId.toString();
-
-      console.log("Department ID comparison:", {
-        userDepartment: userDeptId,
-        requestedDepartment: requestedDeptId,
-        userRole: req.user!.role,
-        isMatch: requestedDeptId === userDeptId,
-      });
-
-      const isDepartmentHead =
-        department.head?.toString() === req.user!._id.toString();
-
-      if (
-        !userDeptId ||
-        (!isDepartmentHead && requestedDeptId !== userDeptId)
-      ) {
-        console.log(
-          "Access denied: Department mismatch or user is not department head",
-        );
-        res.status(403).json({
-          success: false,
-          message: "Not authorized to access requisitions from this department",
-        });
-        return;
-      }
     }
 
     // Pagination
@@ -2492,72 +2325,26 @@ export const getRequisitionsByDepartment = async (
     const limit = parseInt(req.query.limit as string) || 10;
     const startIndex = (page - 1) * limit;
 
-    // Filtering
-    const status = req.query.status as string;
+    // Filtering - All lifecycle statuses allowed so stakeholders can monitor
+    const status = req.query.status as string | string[];
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
 
-    const query: any = { department: departmentId };
-
-    // For Department Heads, only show SUBMITTED and above statuses
-    if (
-      req.user!.role === UserRole.DEPARTMENT_HEAD ||
-      req.user!.role === UserRole.HHRA
-    ) {
-      const submittedAndAboveStatuses = [
-        RequisitionStatus.SUBMITTED,
-        RequisitionStatus.DEPARTMENT_APPROVED,
-        RequisitionStatus.DEPARTMENT_REJECTED,
-        RequisitionStatus.PROCUREMENT_REVIEW,
-        RequisitionStatus.VENDOR_BIDDING,
-        RequisitionStatus.HHRA_REVIEW,
-        RequisitionStatus.HHRA_APPROVED,
-        RequisitionStatus.HHRA_REJECTED,
-        RequisitionStatus.NEGOTIATION,
-        RequisitionStatus.PO_GENERATED,
-        RequisitionStatus.PO_GENERATION,
-        RequisitionStatus.VENDOR_ACKNOWLEDGED,
-        RequisitionStatus.DELIVERED,
-        RequisitionStatus.INVENTORY_CONFIRMED,
-        RequisitionStatus.DEPARTMENT_CONFIRMED,
-        RequisitionStatus.COMPLETED,
-        RequisitionStatus.PAID,
-        RequisitionStatus.CANCELLED,
-      ];
-      query.status = { $in: submittedAndAboveStatuses };
+    const currentUserIdStr = normalizeObjectId(getUserId(req.user));
+    const assignedApproverId = getUserId(req.user);
+    const orConditions: any[] = [{ department: departmentId }];
+    if (assignedApproverId) {
+      orConditions.push({ assignedApprover: assignedApproverId });
     }
+    if (currentUserIdStr) {
+      orConditions.push({ assignedApprover: currentUserIdStr });
+      orConditions.push({ "approvals.approver": currentUserIdStr });
+    }
+    const query: any = { $or: orConditions };
 
     if (status) {
-      // If a specific status is requested, use that (but respect HOD restrictions)
-      if (
-        req.user!.role === UserRole.DEPARTMENT_HEAD ||
-        req.user!.role === UserRole.HHRA
-      ) {
-        // Make sure the requested status is in the allowed list
-        const submittedAndAboveStatuses = [
-          RequisitionStatus.SUBMITTED,
-          RequisitionStatus.DEPARTMENT_APPROVED,
-          RequisitionStatus.DEPARTMENT_REJECTED,
-          RequisitionStatus.PROCUREMENT_REVIEW,
-          RequisitionStatus.VENDOR_BIDDING,
-          RequisitionStatus.HHRA_REVIEW,
-          RequisitionStatus.HHRA_APPROVED,
-          RequisitionStatus.HHRA_REJECTED,
-          RequisitionStatus.NEGOTIATION,
-          RequisitionStatus.PO_GENERATED,
-          RequisitionStatus.PO_GENERATION,
-          RequisitionStatus.VENDOR_ACKNOWLEDGED,
-          RequisitionStatus.DELIVERED,
-          RequisitionStatus.INVENTORY_CONFIRMED,
-          RequisitionStatus.DEPARTMENT_CONFIRMED,
-          RequisitionStatus.COMPLETED,
-          RequisitionStatus.PAID,
-          RequisitionStatus.CANCELLED,
-        ];
-        if (submittedAndAboveStatuses.includes(status as RequisitionStatus)) {
-          query.status = status;
-        }
-        // If they request DRAFT, ignore it
+      if (Array.isArray(status)) {
+        query.status = { $in: status };
       } else {
         query.status = status;
       }
@@ -2574,30 +2361,207 @@ export const getRequisitionsByDepartment = async (
       query.createdAt = { $lte: new Date(endDate) };
     }
 
-    // Get total count
-    const total = await Requisition.countDocuments(query);
+    // Try Mongoose first
+    try {
+      const allMongo = await Requisition.find(query)
+        .populate("requester", "firstName lastName email")
+        .populate("department", "name code head")
+        .sort({ createdAt: -1 });
+      const visible = allMongo.filter((requisition: any) =>
+        canAccessRequisition(req.user, requisition),
+      );
+      const requisitions = visible.slice(startIndex, startIndex + limit);
 
-    // Get requisitions
-    const requisitions = await Requisition.find(query)
-      .populate("requester", "firstName lastName email")
-      // .populate("vendorCategory", "name") // DEPRECATED - field removed
-      .sort({ createdAt: -1 })
-      .skip(startIndex)
-      .limit(limit);
+      const data = requisitions.map((r: any) => {
+        const obj = typeof r.toObject === "function" ? r.toObject() : r;
+        return {
+          ...obj,
+          approvals:
+            obj.approvals?.map((ap: any) => ({
+              ...ap,
+              approverName:
+                ap.approverName ||
+                (typeof ap.approver === "object"
+                  ? `${ap.approver?.firstName || ""} ${ap.approver?.lastName || ""}`.trim()
+                  : ""),
+              approverRole:
+                ap.approverRole ||
+                (ap.stage === "Finance" || ap.stage === "HoF"
+                  ? "hof"
+                  : ap.stage === "HR" || ap.stage === "HHRA"
+                    ? "hhr"
+                    : ap.stage === "HOD_TOOL_COMMENT"
+                      ? "hodToolComment"
+                    : "hod"),
+              approvedAt: ap.approvedAt || ap.timestamp,
+            })) || [],
+        };
+      });
 
-    // Pagination result
-    const pagination = {
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
-    };
+      res.status(200).json({
+        success: true,
+        count: data.length,
+        pagination: {
+          total: visible.length,
+          page,
+          pages: Math.ceil(visible.length / limit) || 1,
+          limit,
+        },
+        data,
+      });
+      return;
+    } catch {
+      // Fallback to PostgreSQL
+    }
+
+    let userApprovedReqIds: string[] = [];
+    if (currentUserIdStr) {
+      try {
+        const userApprovals = await db
+          .select({ requisitionId: requisitionApprovals.requisitionId })
+          .from(requisitionApprovals)
+          .where(eq(requisitionApprovals.approverId, currentUserIdStr));
+        userApprovedReqIds = userApprovals.map((a) => a.requisitionId);
+      } catch {
+        // Continue if table query fails
+      }
+    }
+
+    const whereConditions = [eq(requisitions.departmentId, String(departmentId))];
+    if (currentUserIdStr) {
+      whereConditions.push(eq(requisitions.assignedApproverId, currentUserIdStr));
+    }
+    if (userApprovedReqIds.length > 0) {
+      whereConditions.push(inArray(requisitions.id, userApprovedReqIds));
+    }
+
+    let pgReqs = await db.query.requisitions.findMany({
+      where: or(...whereConditions),
+      with: {
+        requester: true,
+        department: true,
+        items: true,
+        approvals: {
+          with: {
+            approver: true,
+          },
+        },
+      },
+      orderBy: [desc(requisitions.createdAt)],
+    });
+
+    pgReqs = pgReqs.filter((requisition) =>
+      canAccessRequisition(req.user, requisition),
+    );
+
+    if (status) {
+      if (Array.isArray(status)) {
+        pgReqs = pgReqs.filter((r) => status.includes(r.status || ""));
+      } else {
+        pgReqs = pgReqs.filter((r) => r.status === status);
+      }
+    }
+    if (startDate) {
+      const sDate = new Date(startDate);
+      pgReqs = pgReqs.filter((r) => r.createdAt && new Date(r.createdAt) >= sDate);
+    }
+    if (endDate) {
+      const eDate = new Date(endDate);
+      pgReqs = pgReqs.filter((r) => r.createdAt && new Date(r.createdAt) <= eDate);
+    }
+
+    const totalPg = pgReqs.length;
+    const paginated = pgReqs.slice(startIndex, startIndex + limit);
+
+    const data = paginated.map((r) => ({
+      _id: r.id,
+      requisitionNumber: r.requisitionNumber,
+      title: r.title,
+      urgency: r.urgency,
+      justification: r.justification,
+      deliveryLocation: r.deliveryLocationId,
+      deliveryDate: r.deliveryDate,
+      paymentStatus: r.paymentStatus,
+      paymentAmount: r.paymentAmount,
+      requester: r.requester
+        ? {
+            _id: r.requester.id,
+            firstName: r.requester.firstName,
+            lastName: r.requester.lastName,
+            email: r.requester.email,
+          }
+        : r.requesterId,
+      department: r.department
+        ? {
+            _id: r.department.id,
+            name: r.department.name,
+            code: r.department.code,
+          }
+        : r.departmentId,
+      status: r.status,
+      items:
+        r.items?.map((it) => ({
+          _id: it.id,
+          itemName: it.itemName,
+          itemType: it.itemType,
+          preferredBrand: it.preferredBrand,
+          itemDescription: it.itemDescription,
+          uploadImage: it.uploadImage,
+          units: it.units,
+          UOM: it.UOM,
+          isWorkTool: it.isWorkTool,
+          workToolSubcategory: it.workToolSubcategory ? [it.workToolSubcategory] : [],
+          status: it.status,
+        })) || [],
+      approvals:
+        r.approvals?.map((ap: any) => {
+          const approverName =
+            ap.approverName ||
+            (ap.approver
+              ? `${ap.approver.firstName || ""} ${ap.approver.lastName || ""}`.trim()
+              : "");
+          return {
+            _id: ap.id,
+            stage: ap.stage,
+            approver: ap.approver
+              ? {
+                  _id: ap.approver.id,
+                  firstName: ap.approver.firstName,
+                  lastName: ap.approver.lastName,
+                  email: ap.approver.email,
+                  name: approverName,
+                }
+              : ap.approverId,
+            approverId: ap.approverId,
+            approverName,
+            approverRole:
+              ap.stage === "Finance" || ap.stage === "HoF"
+                ? "hof"
+                : ap.stage === "HR" || ap.stage === "HHRA"
+                  ? "hhr"
+                  : ap.stage === "HOD_TOOL_COMMENT"
+                    ? "hodToolComment"
+                  : "hod",
+            status: ap.status,
+            comments: ap.comments,
+            timestamp: ap.timestamp,
+            approvedAt: ap.timestamp,
+          };
+        }) || [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      count: requisitions.length,
-      pagination,
-      data: requisitions,
+      count: data.length,
+      pagination: {
+        total: totalPg,
+        page,
+        pages: Math.ceil(totalPg / limit) || 1,
+        limit,
+      },
+      data,
     });
   } catch (error) {
     next(error);
@@ -2739,6 +2703,12 @@ export const cancelRequisition = async (
       details: `Requisition cancelled: ${reason}`,
     });
 
+    await notifyRequisitionStatusChanged(
+      requisition,
+      (req.user as any)._id.toString(),
+      `Requisition was cancelled. Reason: ${reason}`,
+    );
+
     // Notify requester if cancelled by someone else
     if (
       requisition.requester.toString() !==
@@ -2787,41 +2757,21 @@ const canActorReviewItems = (
     currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.SUPER_ADMIN;
   if (isAdmin) return { allowed: true };
 
-  const isFinanceHOD =
-    currentUser.role === UserRole.HEAD_OF_FINANCE ||
-    (currentUser.role === UserRole.DEPARTMENT_HEAD &&
-      currentUser.department &&
-      ((currentUser.department as any).code === "5" ||
-        (currentUser.department as any).code === "FIN" ||
-        (currentUser.department as any).name?.toLowerCase().includes("finance") ||
-        (currentUser.department as any).name?.toLowerCase().includes("accounts") ||
-        currentUser.designation === "Head, Finance"));
-  if (isFinanceHOD) return { allowed: true };
-
-  const isHrHOD =
-    currentUser.role === UserRole.HEAD_OF_HR ||
-    currentUser.role === UserRole.HHRA ||
-    currentUser.role === UserRole.HR_APPROVER ||
-    (currentUser.role === UserRole.DEPARTMENT_HEAD &&
-      ((currentUser.department &&
-        ((currentUser.department as any).code === "4" ||
-          (currentUser.department as any).code === "HR" ||
-          (currentUser.department as any).name?.toLowerCase().includes("hr") ||
-          (currentUser.department as any).name?.toLowerCase().includes("human resources"))) ||
-        currentUser.designation === "Head, Human Resources & Admin"));
-  if (isHrHOD) return { allowed: true };
-
   const currentUserId = normalizeObjectId(currentUser._id);
   const isAssigned =
+    currentUser.role === UserRole.DEPARTMENT_HEAD &&
     requisition.assignedApprover &&
     normalizeObjectId(requisition.assignedApprover) === currentUserId;
   if (isAssigned) return { allowed: true };
 
-  const isDepartmentHead =
-    currentUser.role === UserRole.DEPARTMENT_HEAD || currentUser.role === UserRole.HHRA;
-
   const userDepartmentId = normalizeObjectId(currentUser.department);
   const requisitionDepartmentId = normalizeObjectId(requisition.department);
+  const departmentHeadId = normalizeObjectId(
+    requisition.department?.head || requisition.department?.headId,
+  );
+  const isDepartmentHead =
+    currentUser.role === UserRole.DEPARTMENT_HEAD ||
+    departmentHeadId === currentUserId;
 
   if (isDepartmentHead) {
     if (userDepartmentId && requisitionDepartmentId && userDepartmentId === requisitionDepartmentId) {
@@ -2835,7 +2785,7 @@ const canActorReviewItems = (
 
   return {
     allowed: false,
-    message: `Only Department Heads, Head of Finance, or HHRA can ${action} items`,
+    message: `Only the department Head of Department can ${action} items`,
   };
 };
 
@@ -2871,23 +2821,10 @@ export const approveItem = async (
       return;
     }
 
-    const isFinanceApprover =
-      currentUser.role === UserRole.HEAD_OF_FINANCE ||
-      currentUser.role === UserRole.FINANCE_MANAGER ||
-      currentUser.role === UserRole.ADMIN ||
-      currentUser.role === UserRole.SUPER_ADMIN ||
-      (currentUser.department &&
-        ((currentUser.department.code === "5" ||
-          currentUser.department.code === "FIN" ||
-          currentUser.department.name?.toLowerCase().includes("finance") ||
-          currentUser.department.name?.toLowerCase().includes("accounts")) &&
-         currentUser.role === UserRole.DEPARTMENT_HEAD));
-
     const approvalAllowedStatuses = [
       RequisitionStatus.SUBMITTED,
       RequisitionStatus.DEPARTMENT_REJECTED,
       RequisitionStatus.HR_REVIEW,
-      ...(isFinanceApprover ? [RequisitionStatus.DEPARTMENT_APPROVED, RequisitionStatus.HR_APPROVED] : []),
     ];
 
     if (!approvalAllowedStatuses.includes(requisition.status)) {
@@ -2923,7 +2860,7 @@ export const approveItem = async (
     }
 
     // Update item approval status
-    item.status = item.isWorkTool
+    item.status = isWorkToolItem(item)
       ? ItemStatus.HR_REVIEW
       : ItemStatus.DEPARTMENT_APPROVED;
     item.departmentApprovedBy = userId!;
@@ -2938,29 +2875,16 @@ export const approveItem = async (
       item.departmentComments = comments || undefined;
     }
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
-    if (isFinanceApprover && (requisition.status === RequisitionStatus.DEPARTMENT_APPROVED || requisition.status === RequisitionStatus.HR_APPROVED)) {
-      requisition.status = RequisitionStatus.HOF_APPROVED;
-      requisition.hofApprovedAt = new Date();
-      requisition.hofApprovedBy = userId!;
-      if (!requisition.approvals) requisition.approvals = [];
-      const exIdx = requisition.approvals.findIndex((a: any) => a.stage === "Finance" || a.approverRole === "hof");
-      if (exIdx !== -1) {
-        requisition.approvals[exIdx].status = "approved";
-        requisition.approvals[exIdx].approver = userId!;
-        requisition.approvals[exIdx].timestamp = new Date();
-      } else {
-        requisition.approvals.push({
-          stage: "Finance",
-          approver: userId!,
-          approverRole: "hof",
-          status: "approved",
-          comments: comments || "Approved by Head of Finance",
-          timestamp: new Date(),
-        } as any);
-      }
-    }
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId!.toString(),
+        `Requisition status changed to ${requisition.status} after an item approval.`,
+      );
+    }
 
     // Log item history
     await logItemHistory(
@@ -2984,7 +2908,7 @@ export const approveItem = async (
 
     res.status(200).json({
       success: true,
-      message: item.isWorkTool
+      message: isWorkToolItem(item)
         ? "Item approved and sent to HR for review"
         : isReinstatingRejected
           ? "Item reinstated and approved"
@@ -3089,8 +3013,16 @@ export const rejectItem = async (
       item.departmentApprovedAt = undefined;
     }
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId!.toString(),
+        `Requisition status changed to ${requisition.status} after an item rejection.`,
+      );
+    }
 
     // Log item history
     await logItemHistory(
@@ -3167,23 +3099,10 @@ export const bulkApproveItems = async (
       return;
     }
 
-    const isFinanceApprover =
-      currentUser.role === UserRole.HEAD_OF_FINANCE ||
-      currentUser.role === UserRole.FINANCE_MANAGER ||
-      currentUser.role === UserRole.ADMIN ||
-      currentUser.role === UserRole.SUPER_ADMIN ||
-      (currentUser.department &&
-        ((currentUser.department.code === "5" ||
-          currentUser.department.code === "FIN" ||
-          currentUser.department.name?.toLowerCase().includes("finance") ||
-          currentUser.department.name?.toLowerCase().includes("accounts")) &&
-         currentUser.role === UserRole.DEPARTMENT_HEAD));
-
     const approvalAllowedStatuses = [
       RequisitionStatus.SUBMITTED,
       RequisitionStatus.DEPARTMENT_REJECTED,
       RequisitionStatus.HR_REVIEW,
-      ...(isFinanceApprover ? [RequisitionStatus.DEPARTMENT_APPROVED, RequisitionStatus.HR_APPROVED] : []),
     ];
 
     if (!approvalAllowedStatuses.includes(requisition.status)) {
@@ -3219,7 +3138,7 @@ export const bulkApproveItems = async (
       }
 
       // Update item approval status
-      item.status = item.isWorkTool
+    item.status = isWorkToolItem(item)
         ? ItemStatus.HR_REVIEW
         : ItemStatus.DEPARTMENT_APPROVED;
       item.departmentApprovedBy = userId!;
@@ -3252,29 +3171,16 @@ export const bulkApproveItems = async (
       );
     }
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
-    if (isFinanceApprover && (requisition.status === RequisitionStatus.DEPARTMENT_APPROVED || requisition.status === RequisitionStatus.HR_APPROVED)) {
-      requisition.status = RequisitionStatus.HOF_APPROVED;
-      requisition.hofApprovedAt = new Date();
-      requisition.hofApprovedBy = userId!;
-      if (!requisition.approvals) requisition.approvals = [];
-      const exIdx = requisition.approvals.findIndex((a: any) => a.stage === "Finance" || a.approverRole === "hof");
-      if (exIdx !== -1) {
-        requisition.approvals[exIdx].status = "approved";
-        requisition.approvals[exIdx].approver = userId!;
-        requisition.approvals[exIdx].timestamp = new Date();
-      } else {
-        requisition.approvals.push({
-          stage: "Finance",
-          approver: userId!,
-          approverRole: "hof",
-          status: "approved",
-          comments: comments || "Approved by Head of Finance",
-          timestamp: new Date(),
-        } as any);
-      }
-    }
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId.toString(),
+        `Requisition status changed to ${requisition.status} after item approval.`,
+      );
+    }
 
     if (approvedItemIds.length > 0) {
       await notifyBulkItemAction(
@@ -3435,8 +3341,16 @@ export const bulkRejectItems = async (
       );
     }
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId.toString(),
+        `Requisition status changed to ${requisition.status} after item rejection.`,
+      );
+    }
 
     if (rejectedItemIds.length > 0) {
       await notifyBulkItemAction(
@@ -3523,7 +3437,7 @@ export const hrApproveItem = async (
     }
 
     // Verify item is a working tool
-    if (!item.isWorkTool) {
+    if (!isWorkToolItem(item)) {
       res.status(400).json({
         success: false,
         message: "Only working tools require HR approval",
@@ -3558,15 +3472,20 @@ export const hrApproveItem = async (
 
     const cleanComment = typeof comments === "string" && comments.trim() ? comments.trim() : "Working tool approved by HR";
 
+    const approverName = req.user
+      ? `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim()
+      : undefined;
     if (hrApprovalIndex !== -1) {
       requisition.approvals[hrApprovalIndex].status = "approved";
       requisition.approvals[hrApprovalIndex].approver = userId!;
+      requisition.approvals[hrApprovalIndex].approverName = approverName;
       requisition.approvals[hrApprovalIndex].comments = cleanComment;
       requisition.approvals[hrApprovalIndex].timestamp = new Date();
     } else {
       requisition.approvals.push({
         stage: "HR",
         approver: userId!,
+        approverName,
         approverRole: "hhr",
         status: "approved",
         comments: cleanComment,
@@ -3574,8 +3493,42 @@ export const hrApproveItem = async (
       } as any);
     }
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
+    if (requisition.status === RequisitionStatus.HOD_TOOL_COMMENT) {
+      const categoryError = validateWorkToolCategories(requisition.items);
+      if (categoryError) {
+        res.status(400).json({ success: false, message: categoryError });
+        return;
+      }
+      const category = getWorkToolCategory(
+        requisition.items.find(isActiveWorkToolItem),
+      );
+      const route = category
+        ? await resolveWorkToolDepartmentHead(category)
+        : { error: "A work tool category is required before HoD routing" };
+      if ("error" in route) {
+        res.status(400).json({ success: false, message: route.error });
+        return;
+      }
+      requisition.assignedApprover = route.departmentHeadId;
+      requisition.approvals.push({
+        stage: "HOD_TOOL_COMMENT",
+        approver: route.departmentHeadId,
+        approverRole: "hodToolComment",
+        status: "pending",
+        comments: "Awaiting the work tool category HoD's required comment",
+        timestamp: new Date(),
+      } as any);
+    }
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId!.toString(),
+        `Requisition status changed to ${requisition.status} after HR approved an item.`,
+      );
+    }
 
     // Log item history
     await logItemHistory(
@@ -3659,7 +3612,7 @@ export const hrRejectItem = async (
     }
 
     // Verify item is a working tool
-    if (!item.isWorkTool) {
+    if (!isWorkToolItem(item)) {
       res.status(400).json({
         success: false,
         message: "Only working tools require HR approval",
@@ -3682,8 +3635,16 @@ export const hrRejectItem = async (
     item.hrRejectedAt = new Date();
     item.hrComments = comments;
 
+    const previousRequisitionStatus = requisition.status;
     await updateRequisitionStatusFromItems(requisition);
     await requisition.save();
+    if (requisition.status !== previousRequisitionStatus) {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId!.toString(),
+        `Requisition status changed to ${requisition.status} after HR rejected an item.`,
+      );
+    }
 
     // Log item history
     await logItemHistory(
@@ -3728,13 +3689,12 @@ export const getItemsForProcurementReview = async (
       return;
     }
 
-    // Find all requisitions with items ready for procurement review
+    // Include the new direct HoD/HHRA-to-PM route and legacy HoF-approved records.
     const requisitions = await Requisition.find({
       $or: [
+        { status: RequisitionStatus.DEPARTMENT_APPROVED },
         { status: RequisitionStatus.HOF_APPROVED },
         { status: RequisitionStatus.PROCUREMENT_REVIEW },
-        { "approvals.stage": "Finance", "approvals.status": "approved" },
-        { "approvals.approverRole": "hof", "approvals.status": "approved" },
       ],
     })
       .populate("requester", "firstName lastName email")
@@ -3818,35 +3778,48 @@ export const moveToProcurementReview = async (
       return;
     }
 
-    // Enforce Head of Finance approval before moving to procurement review
-    const isHofApproved =
+    const canEnterProcurement =
+      requisition.status === RequisitionStatus.DEPARTMENT_APPROVED ||
       requisition.status === RequisitionStatus.HOF_APPROVED ||
-      requisition.approvals?.some(
-        (a: any) =>
-          (a.stage === "Finance" || a.stage === "HoF" || a.approverRole === "hof") &&
-          a.status === "approved",
-      );
-
-    if (!isHofApproved) {
+      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW;
+    if (!canEnterProcurement) {
       res.status(400).json({
         success: false,
         message:
-          "Requisition must be approved by Head of Finance before moving to procurement review",
+          "Requisition must complete the required department and HHRA approvals before moving to procurement review",
       });
       return;
     }
 
-    // Check if requisition has approved items
-    const hasApprovedItems = requisition.items.some(
-      (item: any) =>
-        item.status === ItemStatus.DEPARTMENT_APPROVED ||
-        item.status === ItemStatus.HR_APPROVED,
+    const activeItems = requisition.items.filter(
+      (item: any) => item.status !== ItemStatus.CANCELLED,
     );
+    const hasWorkTools = hasActiveWorkToolItems(requisition.items);
+    const hasHhraApproval = requisition.approvals?.some(
+      (approval: any) =>
+        (approval.stage === "HHRA" ||
+          approval.stage === "HR" ||
+          approval.approverRole === "hhr") &&
+        approval.status === "approved",
+    );
+    const hasToolHeadComment = requisition.approvals?.some(
+      (approval: any) =>
+        approval.stage === "HOD_TOOL_COMMENT" &&
+        approval.status === "commented",
+    );
+    const hasApprovedItems =
+      activeItems.length > 0 &&
+      activeItems.every(
+        (item: any) =>
+          item.status === ItemStatus.DEPARTMENT_APPROVED ||
+          item.status === ItemStatus.HR_APPROVED,
+      ) &&
+      (!hasWorkTools || (hasHhraApproval && hasToolHeadComment));
 
     if (!hasApprovedItems) {
       res.status(400).json({
         success: false,
-        message: "No approved items found in this requisition",
+        message: "All active items must complete their required approvals before procurement review",
       });
       return;
     }
@@ -3863,6 +3836,12 @@ export const moveToProcurementReview = async (
       user: userId!.toString(),
       details: "Moved to procurement review by PM",
     });
+
+    await notifyRequisitionStatusChanged(
+      requisition,
+      userId!.toString(),
+      "Requisition moved to procurement review.",
+    );
 
     res.status(200).json({
       success: true,
@@ -4049,6 +4028,14 @@ export const updatePaymentStatus = async (
       user: userId!.toString(),
       details: `Payment status changed from ${oldStatus} to ${paymentStatus}`,
     });
+
+    if (paymentStatus === "fully_paid") {
+      await notifyRequisitionStatusChanged(
+        requisition,
+        userId!.toString(),
+        "Payment is complete and the requisition is now completed.",
+      );
+    }
 
     res.status(200).json({
       success: true,

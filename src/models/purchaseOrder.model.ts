@@ -6,7 +6,11 @@ const BasePurchaseOrder = createPgModel("purchaseOrders");
 const PurchaseOrder: any = {
   ...BasePurchaseOrder,
 
-  async create(data: any) {
+  async create(data: any, options?: any) {
+    if (Array.isArray(data)) {
+      return Promise.all(data.map((item: any) => this.create(item)));
+    }
+
     if (!data.poNumber) {
       const date = new Date();
       const year = date.getFullYear().toString().slice(-2);

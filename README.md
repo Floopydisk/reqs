@@ -96,3 +96,9 @@ Request status changes to Delivered (or Partially Delivered if not all approved 
 RFQ status changes to Completed
 PO status changes: Completed
 GRN status changes to Delivered
+
+## Authentication
+
+Backend email/password and Google sign-in setup, including the Google OAuth
+redirect URI and the proposed intranet email-lookup contract, is documented in
+[docs/authentication.md](./docs/authentication.md).

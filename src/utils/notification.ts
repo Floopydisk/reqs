@@ -240,9 +240,6 @@ function buildEmail(
 
 export async function notifyUsers(payload: NotificationPayload): Promise<void> {
   try {
-    // emit internal event for potential web-socket bridge
-    notifications.emit("notification", payload);
-
     const hasUsers = payload.targetUserIds?.length || 0;
     const hasVendors = payload.targetVendorIds?.length || 0;
 
@@ -291,9 +288,11 @@ export async function notifyUsers(payload: NotificationPayload): Promise<void> {
       await Notification.insertMany(notificationDocs);
     }
 
+    notifications.emit("notification", payload);
+
     // 3. Send email notifications
     const emailEnabled =
-      (process.env.NOTIFY_EMAIL_ENABLED || "true").toLowerCase() === "true";
+      process.env.NOTIFY_EMAIL_ENABLED?.trim().toLowerCase() === "true";
     if (!emailEnabled) return;
 
     // Get actor information (could be User or Vendor)

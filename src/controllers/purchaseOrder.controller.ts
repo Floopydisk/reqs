@@ -1,3 +1,5 @@
+import * as schema from "../db/schema";
+import { getRelatedProcurementItems } from "../utils/relatedProcurementHelper";
 import { Request, Response, NextFunction } from "express";
 import PurchaseOrder from "../models/purchaseOrder.model";
 import RFQ from "../models/rfq.model";
@@ -5,7 +7,7 @@ import Requisition from "../models/requisition.model";
 import Location from "../models/location.model";
 import User from "../models/user.model";
 import { db } from "../db";
-import { purchaseOrders } from "../db/schema";
+import { purchaseOrders, requisitions } from "../db/schema";
 import { eq, desc } from "drizzle-orm";
 import {
   PurchaseOrderStatus,
@@ -18,7 +20,13 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import { startSession, isValidObjectId } from "../utils/objectIdHelper";
+import {
+  getUserId,
+  startSession,
+  isValidObjectId,
+  normalizeObjectId,
+} from "../utils/objectIdHelper";
+import { notifyRequisitionStatusChanged } from "../utils/requisitionNotifications";
 
 const buildRelatedPayload = (
   requisition: any,
@@ -273,35 +281,51 @@ export const getPurchaseOrder = async (
       }
 
       purchaseOrder = {
+        ...pgPO,
         _id: pgPO.id,
-        poNumber: pgPO.poNumber,
         title: pgPO.title || "Purchase Order",
         requisition: pgPO.requisitionId,
         rfq: pgPO.rfqId,
         vendor: pgPO.vendorId,
-        items: pgPO.items,
-        totalAmount: pgPO.totalAmount,
         deliveryLocation: pgPO.deliveryLocationId,
-        deliveryDate: pgPO.deliveryDate,
         deliveryContact: pgPO.deliveryContactId,
-        approvals: pgPO.approvals,
-        status: pgPO.status,
-        serviceClassificationOverride: pgPO.serviceClassificationOverride,
-        createdAt: pgPO.createdAt,
-        updatedAt: pgPO.updatedAt,
       };
     }
 
-    const requisitionDoc = await Requisition.findById(purchaseOrder.requisition)
-      .populate("department", "name")
-      .populate("relatedRfqs", "title rfqNumber")
-      .populate("relatedPos", "title poNumber");
+    let requisitionDoc: any = null;
+    try {
+      requisitionDoc = await Requisition.findById(purchaseOrder.requisition)
+        .populate("department", "name")
+        .populate("relatedRfqs", "title rfqNumber")
+        .populate("relatedPos", "title poNumber");
+    } catch (e) {
+      // Fallback to PostgreSQL
+    }
+
+    if (!requisitionDoc && purchaseOrder.requisition) {
+      const pgReq = await db.query.requisitions.findFirst({
+        where: eq(requisitions.id, String(purchaseOrder.requisition)),
+        with: { department: true },
+      });
+      if (pgReq) {
+        requisitionDoc = {
+          _id: pgReq.id,
+          title: pgReq.title,
+          requester: pgReq.requesterId,
+          department: pgReq.department
+            ? { _id: pgReq.department.id, name: pgReq.department.name }
+            : pgReq.departmentId,
+        };
+      }
+    }
+
+    const currentUserId = normalizeObjectId(req.user?._id || req.user?.id);
+    const requesterId = requisitionDoc ? normalizeObjectId(requisitionDoc.requester) : null;
+    const reqDeptId = requisitionDoc ? normalizeObjectId(requisitionDoc.department) : null;
+    const userDeptId = normalizeObjectId(req.user?.department);
 
     if (req.user?.role === UserRole.STAFF) {
-      if (
-        !requisitionDoc ||
-        requisitionDoc.requester.toString() !== (req.user as any)._id.toString()
-      ) {
+      if (!requisitionDoc || requesterId !== currentUserId) {
         res.status(403).json({
           success: false,
           message: "Not authorized to access this purchase order",
@@ -356,8 +380,7 @@ export const getPurchaseOrder = async (
     if (req.user?.role === UserRole.DEPARTMENT_HEAD && !isFinanceOrHrHOD) {
       if (
         !requisitionDoc ||
-        requisitionDoc.department.toString() !==
-          req.user?.department?.toString()
+        (requesterId !== currentUserId && reqDeptId !== userDeptId)
       ) {
         res.status(403).json({
           success: false,
@@ -367,12 +390,15 @@ export const getPurchaseOrder = async (
       }
     }
 
-    const related = buildRelatedPayload(
-      requisitionDoc,
-      (requisitionDoc as any)?.relatedRfqs || [],
-      (requisitionDoc as any)?.relatedPos || [],
-      purchaseOrder.rfq,
-    );
+    const poReqId =
+      purchaseOrder.requisition?._id ||
+      purchaseOrder.requisition ||
+      (requisitionDoc ? requisitionDoc._id : undefined);
+    const related = await getRelatedProcurementItems({
+      poId: String(purchaseOrder._id || purchaseOrder.id),
+      requisitionId: poReqId ? String(poReqId) : undefined,
+      rfqId: purchaseOrder.rfq?._id || purchaseOrder.rfq ? String(purchaseOrder.rfq?._id || purchaseOrder.rfq) : undefined,
+    });
 
     poPlain.title =
       poPlain.title ||
@@ -385,6 +411,24 @@ export const getPurchaseOrder = async (
         ...poPlain,
         related,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getRelatedPOItems = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const related = await getRelatedProcurementItems({ poId: id });
+    res.status(200).json({
+      success: true,
+      data: related,
     });
   } catch (error) {
     next(error);
@@ -420,11 +464,26 @@ export const createPurchaseOrderFromRFQ = async (
       vendorQuote,
       totalAmount,
       items: submittedItems,
+      sla,
     } = req.body;
 
+    let slaPayload: { title: string; content: string } | null = null;
+    if (sla && typeof sla === "object") {
+      slaPayload = {
+        title: typeof sla.title === "string" ? sla.title.trim() : "",
+        content: typeof sla.content === "string" ? sla.content.trim() : "",
+      };
+    } else if (typeof sla === "string" && sla.trim()) {
+      slaPayload = {
+        title: "Service Level Agreement",
+        content: sla.trim(),
+      };
+    }
+
     // Validate user is PM
-    const user = await User.findById(req.user?._id);
-    if (!user || user.role !== UserRole.PROCUREMENT_MANAGER) {
+    const currentUserId = req.user?._id || req.user?.id;
+    const user = await User.findById(currentUserId);
+    if (!user || (user.role !== UserRole.PROCUREMENT_MANAGER && user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN)) {
       await session.abortTransaction();
       res.status(403).json({
         success: false,
@@ -444,6 +503,18 @@ export const createPurchaseOrderFromRFQ = async (
       await session.abortTransaction();
       res.status(404).json({ success: false, message: "RFQ not found" });
       return;
+    }
+
+    if (!rfq.items || !Array.isArray(rfq.items) || rfq.items.length === 0) {
+      const dbItems = await db
+        .select()
+        .from(schema.rfqItems)
+        .where(eq(schema.rfqItems.rfqId, String(rfqId)));
+      rfq.items = dbItems.map((it: any) => ({
+        ...it,
+        _id: it.id,
+        itemId: it.itemId || it.id,
+      }));
     }
 
     // Validate RFQ has vendor assigned (fallback to first vendor in vendors array)
@@ -744,6 +815,7 @@ export const createPurchaseOrderFromRFQ = async (
           termsOfService:
             termsOfService || (rfq as any).termsAndConditions || "",
           paymentTerms: paymentTerms || "",
+          sla: slaPayload,
           quoteUrl: vendorQuoteUrl,
           vendorQuote: vendorQuoteUrl,
           vendorQuotes: quotes,
@@ -757,19 +829,25 @@ export const createPurchaseOrderFromRFQ = async (
       { session },
     );
 
-    const createdPO = purchaseOrder[0];
+    const createdPO = Array.isArray(purchaseOrder) ? purchaseOrder[0] : purchaseOrder;
+    const poRecordId = createdPO?._id || createdPO?.id;
 
-    await RFQ.findByIdAndUpdate(
-      rfq._id,
-      { $addToSet: { relatedPos: createdPO._id } },
-      { session },
-    );
+    if (poRecordId) {
+      await RFQ.findByIdAndUpdate(
+        rfq._id || rfq.id,
+        { $addToSet: { relatedPos: poRecordId } },
+        { session },
+      );
 
-    await Requisition.findByIdAndUpdate(
-      rfq.requisition,
-      { $addToSet: { relatedPos: createdPO._id } },
-      { session },
-    );
+      const targetReqId = rfq.requisition?._id || rfq.requisition || (rfq as any).requisitionId;
+      if (targetReqId) {
+        await Requisition.findByIdAndUpdate(
+          targetReqId,
+          { $addToSet: { relatedPos: poRecordId } },
+          { session },
+        );
+      }
+    }
 
     await session.commitTransaction();
 
@@ -872,6 +950,22 @@ export const updatePurchaseOrder = async (
     if (generalTerms !== undefined) purchaseOrder.generalTerms = generalTerms;
     if (termsOfService !== undefined) purchaseOrder.termsOfService = termsOfService;
     if (paymentTerms !== undefined) purchaseOrder.paymentTerms = paymentTerms;
+    if (req.body.sla !== undefined) {
+      const slaIn = req.body.sla;
+      if (slaIn && typeof slaIn === "object") {
+        purchaseOrder.sla = {
+          title: typeof slaIn.title === "string" ? slaIn.title.trim() : "",
+          content: typeof slaIn.content === "string" ? slaIn.content.trim() : "",
+        };
+      } else if (typeof slaIn === "string" && slaIn.trim()) {
+        purchaseOrder.sla = {
+          title: "Service Level Agreement",
+          content: slaIn.trim(),
+        };
+      } else {
+        purchaseOrder.sla = null;
+      }
+    }
     if (serviceClassificationOverride !== undefined) {
       purchaseOrder.serviceClassificationOverride = serviceClassificationOverride;
     }
@@ -1006,6 +1100,11 @@ export const acknowledgePurchaseOrder = async (
     if (requisition) {
       requisition.status = RequisitionStatus.VENDOR_ACKNOWLEDGED;
       await requisition.save();
+      await notifyRequisitionStatusChanged(
+        requisition,
+        getUserId(req.user)?.toString() || "",
+        "The vendor acknowledged the purchase order and the requisition status changed.",
+      );
     }
 
     res.status(200).json({
@@ -1061,6 +1160,11 @@ export const cancelPurchaseOrder = async (
     if (requisition) {
       requisition.status = RequisitionStatus.CANCELLED;
       await requisition.save();
+      await notifyRequisitionStatusChanged(
+        requisition,
+        getUserId(req.user)?.toString() || "",
+        `The purchase order was cancelled and the requisition was cancelled${reason ? `: ${reason}` : "."}`,
+      );
     }
 
     res.status(200).json({
@@ -1097,12 +1201,29 @@ export const uploadAttachment = async (
 
     const uploadedFile = await uploadToS3(
       req.file,
-      "purchase-order-attachments",
+      "vendor-quotes",
     );
 
     // Add attachment to purchase order
     purchaseOrder.attachments = purchaseOrder.attachments || [];
     purchaseOrder.attachments.push(uploadedFile);
+
+    // Also populate vendorQuotes, quoteUrl, and vendorQuote
+    purchaseOrder.vendorQuotes = Array.isArray(purchaseOrder.vendorQuotes)
+      ? purchaseOrder.vendorQuotes
+      : [];
+    purchaseOrder.vendorQuotes.push({
+      vendor:
+        purchaseOrder.vendor?._id ||
+        purchaseOrder.vendor ||
+        purchaseOrder.vendorId,
+      filename: uploadedFile.name,
+      url: uploadedFile.url,
+      uploadedAt: uploadedFile.uploadedAt || new Date(),
+    });
+    purchaseOrder.quoteUrl = uploadedFile.url;
+    purchaseOrder.vendorQuote = uploadedFile.url;
+
     await purchaseOrder.save();
 
     res.status(200).json({
@@ -1726,35 +1847,39 @@ export const getPurchaseOrdersByRequisition = async (
     const { requisitionId } = req.params;
 
     // Verify requisition exists
-    const requisition = await Requisition.findById(requisitionId);
-    if (!requisition) {
-      res
-        .status(404)
-        .json({ success: false, message: "Requisition not found" });
-      return;
+    let requisition: any = null;
+    try {
+      requisition = await Requisition.findById(requisitionId);
+    } catch {
+      // Fallback
     }
 
-    // DEPRECATED: Vendor role removed - Check permissions
-    // if (req.user?.role === UserRole.VENDOR) {
-    //   // Vendors can only see purchase orders assigned to them
-    //   const purchaseOrders = await PurchaseOrder.find({
-    //     requisition: requisitionId,
-    //     vendor: req.user?.vendor,
-    //   });
+    if (!requisition) {
+      const pgReq = await db.query.requisitions.findFirst({
+        where: eq(requisitions.id, String(requisitionId)),
+      });
+      if (!pgReq) {
+        res
+          .status(404)
+          .json({ success: false, message: "Requisition not found" });
+        return;
+      }
+      requisition = {
+        _id: pgReq.id,
+        requester: pgReq.requesterId,
+        department: pgReq.departmentId,
+        title: pgReq.title,
+      };
+    }
 
-    //   if (purchaseOrders.length === 0) {
-    //     res.status(403).json({
-    //       success: false,
-    //       message: "Not authorized to access these purchase orders",
-    //     });
-    //     return;
-    //   }
-    // } else
+    const currentUserId = normalizeObjectId(req.user?._id || req.user?.id);
+    const requesterId = normalizeObjectId(requisition.requester);
+    const reqDeptId = normalizeObjectId(requisition.department);
+    const userDeptId = normalizeObjectId(req.user?.department);
+
     if (req.user?.role === UserRole.STAFF) {
       // Staff can only see purchase orders for requisitions they created
-      if (
-        requisition.requester.toString() !== (req.user as any)._id.toString()
-      ) {
+      if (requesterId !== currentUserId) {
         res.status(403).json({
           success: false,
           message: "Not authorized to access these purchase orders",
@@ -1762,9 +1887,21 @@ export const getPurchaseOrdersByRequisition = async (
         return;
       }
     } else if (req.user?.role === UserRole.DEPARTMENT_HEAD) {
-      // Department heads can only see purchase orders for their department
+      const isFinanceOrHrHOD =
+        req.user &&
+        req.user.department &&
+        (
+          ["5", "4", "FIN", "HR"].includes((req.user.department as any).code || "") ||
+          ["finance", "accounts", "hr", "human resources"].some((kw: string) =>
+            (req.user.department as any).name?.toLowerCase().includes(kw),
+          )
+        );
+
+      // Department heads can only see purchase orders for their department or if they created it
       if (
-        requisition.department.toString() !== req.user?.department?.toString()
+        !isFinanceOrHrHOD &&
+        requesterId !== currentUserId &&
+        reqDeptId !== userDeptId
       ) {
         res.status(403).json({
           success: false,
@@ -1775,22 +1912,57 @@ export const getPurchaseOrdersByRequisition = async (
     }
 
     // Get purchase orders
-    const purchaseOrders = await PurchaseOrder.find({
-      requisition: requisitionId,
-    })
-      .populate("vendor", "name contactPerson email")
-      .populate("issuedBy", "firstName lastName email")
-      .populate("acknowledgedBy", "firstName lastName email")
-      .sort({ createdAt: -1 });
+    try {
+      const purchaseOrders = await PurchaseOrder.find({
+        requisition: requisitionId,
+      })
+        .populate("vendor", "name contactPerson email")
+        .populate("issuedBy", "firstName lastName email")
+        .populate("acknowledgedBy", "firstName lastName email")
+        .sort({ createdAt: -1 });
 
-    const plainOrders = purchaseOrders.map((po: any) => {
-      const plain = po.toObject ? po.toObject() : { ...po };
-      plain.title =
-        plain.title ||
-        (plain.requisition && plain.requisition.title) ||
-        "Purchase Order";
-      return plain;
+      const plainOrders = purchaseOrders.map((po: any) => {
+        const plain = po.toObject ? po.toObject() : { ...po };
+        plain.title =
+          plain.title ||
+          (plain.requisition && plain.requisition.title) ||
+          requisition.title ||
+          "Purchase Order";
+        return plain;
+      });
+
+      res.status(200).json({
+        success: true,
+        count: plainOrders.length,
+        data: plainOrders,
+      });
+      return;
+    } catch {
+      // Fallback to PostgreSQL
+    }
+
+    const pgPOs = await db.query.purchaseOrders.findMany({
+      where: eq(purchaseOrders.requisitionId, String(requisitionId)),
+      orderBy: [desc(purchaseOrders.createdAt)],
     });
+
+    const plainOrders = pgPOs.map((po: any) => ({
+      _id: po.id,
+      poNumber: po.poNumber,
+      title: po.title || requisition.title || "Purchase Order",
+      requisition: po.requisitionId,
+      rfq: po.rfqId,
+      vendor: po.vendorId,
+      items: po.items,
+      totalAmount: po.totalAmount,
+      deliveryLocation: po.deliveryLocationId,
+      deliveryDate: po.deliveryDate,
+      deliveryContact: po.deliveryContactId,
+      approvals: po.approvals,
+      status: po.status,
+      createdAt: po.createdAt,
+      updatedAt: po.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,

@@ -6,6 +6,7 @@ import User from "../models/user.model";
 import { notifyUsers } from "../utils/notification";
 import { createError } from "../utils/httpError";
 import { isValidObjectId } from "../utils/objectIdHelper";
+import { canAccessRequisition } from "../utils/requisitionAccess";
 
 // @desc    Add a comment to a requisition
 // @route   POST /api/requisitions/:requisitionId/comments
@@ -35,87 +36,11 @@ export const addComment = async (
 
     // Access control for requisition comments
     const requisition = parent;
-    const { status, requester, department } = requisition;
-    const { _id: userId, role, department: userDepartment } = req.user as any;
-
-    const isRequester = requester.toString() === userId.toString();
-    const isDepartmentHead =
-      role === UserRole.DEPARTMENT_HEAD &&
-      ((userDepartment &&
-        userDepartment.toString() === department.toString()) ||
-        ((department as any)?.head &&
-          (department as any).head.toString() === userId.toString()));
-    const isProcurementManager = role === UserRole.PROCUREMENT_MANAGER;
-    const isHrApprover = role === UserRole.HR_APPROVER;
-    const isAccountsApprover = role === UserRole.ACCOUNTS_APPROVER;
-    const isHhra = role === UserRole.HHRA;
-    const isSeniorManagement = role === UserRole.SENIOR_MANAGEMENT;
-
-    let canComment = false;
-
-    switch (status) {
-      case RequisitionStatus.DRAFT:
-        canComment = isRequester;
-        break;
-      case RequisitionStatus.SUBMITTED:
-        canComment = isRequester || isDepartmentHead;
-        break;
-      case RequisitionStatus.DEPARTMENT_APPROVED:
-        canComment = isDepartmentHead || isProcurementManager;
-        break;
-      case RequisitionStatus.DEPARTMENT_REJECTED:
-        canComment = isRequester || isDepartmentHead;
-        break;
-      case RequisitionStatus.PROCUREMENT_REVIEW:
-        canComment = isDepartmentHead || isProcurementManager;
-        break;
-      case RequisitionStatus.VENDOR_BIDDING:
-        canComment = isProcurementManager;
-        break;
-      case RequisitionStatus.HR_REVIEW:
-        canComment = isProcurementManager || isHrApprover || isHhra;
-        break;
-      case RequisitionStatus.HR_APPROVED:
-        canComment = isHrApprover || isAccountsApprover || isHhra;
-        break;
-      case RequisitionStatus.HR_REJECTED:
-        canComment = isProcurementManager || isHrApprover || isHhra;
-        break;
-      // Consolidated HHRA-specific statuses
-      case RequisitionStatus.HHRA_REVIEW:
-        canComment = isProcurementManager || isHhra;
-        break;
-      case RequisitionStatus.HHRA_APPROVED:
-        canComment = isHhra || isAccountsApprover;
-        break;
-      case RequisitionStatus.HHRA_REJECTED:
-        canComment = isProcurementManager || isHhra;
-        break;
-      case RequisitionStatus.ACCOUNTS_REVIEW:
-        canComment = isHrApprover || isAccountsApprover;
-        break;
-      case RequisitionStatus.ACCOUNTS_APPROVED:
-        canComment = isAccountsApprover || isSeniorManagement;
-        break;
-      case RequisitionStatus.ACCOUNTS_REJECTED:
-        canComment = isHrApprover || isAccountsApprover;
-        break;
-      case RequisitionStatus.NEGOTIATION:
-        canComment = isProcurementManager || isSeniorManagement;
-        break;
-      case RequisitionStatus.PO_GENERATED:
-        canComment =
-          isProcurementManager || isSeniorManagement || isAccountsApprover;
-        break;
-      default:
-        canComment = false;
-    }
-
-    if (!canComment) {
+    if (!canAccessRequisition(req.user, requisition)) {
       return next(
         createError(
           403,
-          "Not authorized to comment on this requisition at its current status",
+          "Not authorized to comment on this requisition",
         ),
       );
     }
@@ -291,92 +216,11 @@ export const getComments = async (
 
     // Access control for requisition comments
     const requisition = parent;
-    const { status, requester, department } = requisition;
-    const { _id: userId, role, department: userDepartment } = req.user as any;
-
-    const isRequester = requester.toString() === userId.toString();
-    // A department head can view comments if either:
-    // 1. They are the head of this department, or
-    // 2. This requisition is from their department
-    const isDepartmentHead =
-      role === UserRole.DEPARTMENT_HEAD &&
-      ((userDepartment &&
-        userDepartment.toString() === department.toString()) ||
-        ((department as any) &&
-          (department as any).head &&
-          (department as any).head.toString() === userId.toString()));
-    const isProcurementManager = role === UserRole.PROCUREMENT_MANAGER;
-    const isHrApprover = role === UserRole.HR_APPROVER;
-    const isAccountsApprover = role === UserRole.ACCOUNTS_APPROVER;
-    const isHhra = role === UserRole.HHRA;
-    const isSeniorManagement = role === UserRole.SENIOR_MANAGEMENT;
-
-    let canView = false;
-
-    switch (status) {
-      case RequisitionStatus.DRAFT:
-        canView = isRequester;
-        break;
-      case RequisitionStatus.SUBMITTED:
-        canView = isRequester || isDepartmentHead;
-        break;
-      case RequisitionStatus.DEPARTMENT_APPROVED:
-      case RequisitionStatus.PROCUREMENT_REVIEW:
-        canView = isRequester || isDepartmentHead || isProcurementManager;
-        break;
-      case RequisitionStatus.DEPARTMENT_REJECTED:
-        canView = isRequester || isDepartmentHead;
-        break;
-      case RequisitionStatus.VENDOR_BIDDING:
-        canView = isProcurementManager;
-        break;
-      case RequisitionStatus.HR_REVIEW:
-      case RequisitionStatus.HR_APPROVED:
-      case RequisitionStatus.HR_REJECTED:
-        canView =
-          isRequester ||
-          isDepartmentHead ||
-          isProcurementManager ||
-          isHrApprover ||
-          isHhra;
-        break;
-      case RequisitionStatus.HHRA_REVIEW:
-      case RequisitionStatus.HHRA_APPROVED:
-      case RequisitionStatus.HHRA_REJECTED:
-        canView =
-          isRequester || isDepartmentHead || isProcurementManager || isHhra;
-        break;
-      case RequisitionStatus.ACCOUNTS_REVIEW:
-      case RequisitionStatus.ACCOUNTS_APPROVED:
-      case RequisitionStatus.ACCOUNTS_REJECTED:
-        canView =
-          isRequester ||
-          isDepartmentHead ||
-          isProcurementManager ||
-          isHrApprover ||
-          isAccountsApprover;
-        break;
-      case RequisitionStatus.NEGOTIATION:
-      case RequisitionStatus.PO_GENERATED:
-      case RequisitionStatus.COMPLETED:
-        canView =
-          isRequester ||
-          isDepartmentHead ||
-          isProcurementManager ||
-          isHrApprover ||
-          isAccountsApprover ||
-          isHhra ||
-          isSeniorManagement;
-        break;
-      default:
-        canView = isSeniorManagement; // Senior management can view all
-    }
-
-    if (!canView)
+    if (!canAccessRequisition(req.user, requisition))
       return next(
         createError(
           403,
-          "Not authorized to view comments for this requisition at its current status",
+          "Not authorized to view comments for this requisition",
         ),
       );
 

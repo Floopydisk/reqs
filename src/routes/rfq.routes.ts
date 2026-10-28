@@ -3,6 +3,7 @@ import {
   generateRFQsFromRequisition,
   getRFQsByRequisition,
   getRFQById,
+  getRelatedRFQItems,
   updateRFQ,
   issueRFQ,
   issueMultipleRFQs,

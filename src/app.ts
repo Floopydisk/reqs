@@ -13,8 +13,17 @@ import { setupSwagger } from "./config/swagger";
 import { connectDB as connectDatabase } from "./config/database";
 import { initializeScheduler } from "./utils/scheduler";
 
+// Instead of require('dotenv').config();
+require('dotenv').config({ override: true }); 
+
 // Load environment variables
-config();
+const envConfig = config({ path: join(__dirname, "..", ".env") });
+const envFilePort = envConfig.parsed?.PORT;
+if (envFilePort && process.env.PORT && process.env.PORT !== envFilePort) {
+  console.warn(
+    `[config] PORT=${process.env.PORT} from the process environment overrides .env PORT=${envFilePort}`,
+  );
+}
 
 // Ensure uploads directory exists
 const uploadsDir = join(__dirname, "..", "uploads");
@@ -38,6 +47,7 @@ import commentRoutes from "./routes/comment.routes";
 import diagnosticRoutes from "./routes/diagnostic.routes";
 import notificationRoutes from "./routes/notification.routes";
 import locationRoutes from "./routes/location.routes";
+import slaRoutes from "./routes/sla.routes";
 
 // Create Express app
 const app = express();
@@ -56,7 +66,8 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 
 // Set security HTTP headers
-app.use(helmet());
+const securityHeaders = helmet();
+app.use((req, res, next) => securityHeaders(req, res, next));
 
 // Enable CORS - Allow all origins during development, with credentials and preflight handling
 const corsOptions: CorsOptions = {
@@ -191,6 +202,7 @@ app.use("/api/purchase-orders", purchaseOrderRoutes); // Standalone PO routes: /
 app.use("/api/rfqs", purchaseOrderRoutes); // Handles /api/rfqs/:rfqId/purchase-order
 app.use("/api/diagnostics", diagnosticRoutes);
 app.use("/api/locations", locationRoutes);
+app.use("/api/slas", slaRoutes);
 
 // Register notification routes
 app.use("/api/notifications", notificationRoutes);

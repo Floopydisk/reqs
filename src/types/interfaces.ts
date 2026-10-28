@@ -119,6 +119,7 @@ export interface IItem {
   UOM?: string;
   recommendedVendor?: ObjectId;
   isWorkTool: boolean;
+  workToolSubcategory?: string[];
   // Item-level status tracking
   status?: string;
   // HOD approval
@@ -147,6 +148,15 @@ export interface IItem {
   purchaseOrder?: ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+
+export interface ISLA extends Document {
+  title: string;
+  content: string;
+  createdBy?: ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface ILocation extends Document {
@@ -179,7 +189,9 @@ export interface IRequisition extends Document {
   approvals?: {
     stage: string;
     approver: ObjectId; // Reference to User
-    status: "approved" | "rejected" | "pending";
+    approverRole?: string;
+    approverName?: string;
+    status: "approved" | "rejected" | "pending" | "commented";
     comments?: string;
     timestamp: Date;
   }[];
@@ -277,6 +289,10 @@ export interface IPurchaseOrder extends Document {
   pdfUrl?: string;
   serviceClassificationOverride?: string;
   serviceClassificationReason?: string;
+  sla?: {
+    title?: string;
+    content?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
   // @deprecated fields - kept for backward compatibility

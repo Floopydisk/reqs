@@ -69,6 +69,37 @@ export const getUserId = (user: any): any => {
 
 export const isValidObjectId = (id: any): boolean => ObjectId.isValid(id);
 
+export const normalizeObjectId = (value: unknown): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value instanceof ObjectId) {
+    return value.toString();
+  }
+
+  if (typeof value === "object") {
+    const candidate = value as { _id?: unknown; id?: unknown };
+    if (candidate._id) {
+      return normalizeObjectId(candidate._id);
+    }
+
+    if (candidate.id) {
+      return normalizeObjectId(candidate.id);
+    }
+  }
+
+  if (isValidObjectId(value as any)) {
+    return (value as any).toString();
+  }
+
+  return null;
+};
+
 export const startSession = async () => ({
   startTransaction: () => {},
   commitTransaction: async () => {},

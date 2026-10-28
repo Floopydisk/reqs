@@ -1,6 +1,20 @@
 import { Request, Response, NextFunction } from "express";
 import { validationResult, ValidationChain, body } from "express-validator";
 
+export const validateEmailPasswordLoginInput = [
+  body("email")
+    .trim()
+    .notEmpty()
+    .withMessage("Email is required")
+    .isEmail()
+    .withMessage("Please enter a valid email"),
+  body("password")
+    .isString()
+    .withMessage("Password must be a string")
+    .notEmpty()
+    .withMessage("Password is required"),
+];
+
 // Validation chain for vendor login
 export const validateVendorLoginInput = [
   body("email")

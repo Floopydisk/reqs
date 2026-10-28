@@ -1,4 +1,5 @@
 import { RequisitionStatus, ItemStatus } from "../types/enums";
+import { isActiveWorkToolItem, isWorkToolItem } from "./workTool";
 
 /**
  * Aggregates item statuses to determine the overall requisition status
@@ -9,8 +10,8 @@ import { RequisitionStatus, ItemStatus } from "../types/enums";
  *    - Working tools -> hrReview
  * 3. If any item is in hrReview -> requisition status is HR_REVIEW ("Approved by HOD (hr review)")
  * 4. HR approves working tools -> item status becomes hrApproved
- * 5. When all active items are approved (combination of departmentApproved and hrApproved, with all working tools hrApproved) ->
- *    requisition status moves to DEPARTMENT_APPROVED (ready for Head of Finance review / RFQ generation)
+ * 5. After all active items have their required approvals and work-tool HoD comment,
+ *    requisition status moves to DEPARTMENT_APPROVED (ready for PM review)
  * @param requisition - The requisition document with items
  * @returns Updated requisition status based on item statuses
  */
@@ -120,24 +121,17 @@ export function aggregateRequisitionStatus(
   }
 
   // Check if any items are working tools
-  const hasWorkingTools = items.some(
-    (item: any) => item.isWorkTool && item.status !== ItemStatus.CANCELLED
-  );
+  const hasWorkingTools = items.some(isActiveWorkToolItem);
 
   // If all active items are approved
   const approvedCount =
     statusCounts.departmentApproved + statusCounts.hrApproved;
 
   if (activeItems > 0 && approvedCount === activeItems) {
-    // If requisition has already reached HoF approval or later PM stage, preserve that status
+    // Preserve legacy HoF-approved records and requisitions already in procurement.
     const isAlreadyHofApproved =
       requisition.status === RequisitionStatus.HOF_APPROVED ||
-      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW ||
-      requisition.approvals?.some(
-        (a: any) =>
-          (a.stage === "Finance" || a.stage === "HoF" || a.approverRole === "hof") &&
-          a.status === "approved"
-      );
+      requisition.status === RequisitionStatus.PROCUREMENT_REVIEW;
 
     if (isAlreadyHofApproved) {
       return requisition.status === RequisitionStatus.PROCUREMENT_REVIEW
@@ -147,14 +141,16 @@ export function aggregateRequisitionStatus(
 
     if (hasWorkingTools) {
       const allWorkingToolsApproved = items
-        .filter(
-          (item: any) =>
-            item.isWorkTool && item.status !== ItemStatus.CANCELLED
-        )
+        .filter(isActiveWorkToolItem)
         .every((item: any) => item.status === ItemStatus.HR_APPROVED);
 
       if (allWorkingToolsApproved) {
-        return RequisitionStatus.HR_APPROVED;
+        const hasToolComment = requisition.approvals?.some(
+          (approval: any) => approval.stage === "HOD_TOOL_COMMENT" && approval.status === "commented",
+        );
+        return hasToolComment
+          ? RequisitionStatus.DEPARTMENT_APPROVED
+          : RequisitionStatus.HOD_TOOL_COMMENT;
       }
       return RequisitionStatus.HR_REVIEW;
     }
@@ -183,7 +179,7 @@ export async function updateRequisitionStatusFromItems(
   // Check if any department-approved items are working tools and need HR routing
   const departmentApprovedWorkingTools = requisition.items.filter(
     (item: any) =>
-      item.isWorkTool && item.status === ItemStatus.DEPARTMENT_APPROVED
+      isWorkToolItem(item) && item.status === ItemStatus.DEPARTMENT_APPROVED
   );
 
   // Automatically route working tools to HR review

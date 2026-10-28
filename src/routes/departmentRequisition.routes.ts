@@ -67,7 +67,16 @@ router.use(protect);
  */
 router.get(
   "/",
-  authorize(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.DEPARTMENT_HEAD, UserRole.HEAD_OF_FINANCE, UserRole.HEAD_OF_HR, UserRole.HHRA),
+  authorize(
+    UserRole.ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.DEPARTMENT_HEAD,
+    UserRole.HEAD_OF_FINANCE,
+    UserRole.HEAD_OF_HR,
+    UserRole.HR_APPROVER,
+    UserRole.HHRA,
+    UserRole.PROCUREMENT_MANAGER
+  ),
   getRequisitionsByDepartment,
 );
 

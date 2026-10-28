@@ -1,4 +1,3 @@
-import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -11,46 +10,54 @@ interface EmailOptions {
 }
 
 class EmailService {
-  private transporter: nodemailer.Transporter;
-
-  constructor() {
-    this.transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST,
-      port: parseInt(process.env.EMAIL_PORT || "587"),
-      secure: process.env.EMAIL_SECURE === "true",
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
-      },
-    });
-  }
-
   async sendEmail(options: EmailOptions): Promise<void> {
-    const mailOptions = {
-      from: `${process.env.EMAIL_FROM_NAME} <${process.env.EMAIL_FROM_ADDRESS}>`,
-      to: Array.isArray(options.to) ? options.to.join(",") : options.to,
-      subject: options.subject,
-      text: options.text,
-      html: options.html,
-    };
+    const emailEnabled =
+      process.env.NOTIFY_EMAIL_ENABLED?.trim().toLowerCase() === "true";
+    if (!emailEnabled) {
+      console.info(
+        "[email] skipped because NOTIFY_EMAIL_ENABLED is not true",
+      );
+      return;
+    }
 
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      throw new Error("RESEND_API_KEY is required to send email");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      // Add a timeout to prevent hanging if email server is unresponsive
-      const sendPromise = this.transporter.sendMail(mailOptions);
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(
-          () => reject(new Error("Email sending timed out after 10 seconds")),
-          10000
-        );
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "requisitions@daystarng.ibukun.dev",
+          to: options.to,
+          subject: options.subject,
+          text: options.text,
+          html: options.html,
+        }),
+        signal: controller.signal,
       });
 
-      await Promise.race([sendPromise, timeoutPromise]);
+      if (!response.ok) {
+        const responseBody = await response.text();
+        throw new Error(
+          `Resend request failed (${response.status}): ${responseBody}`
+        );
+      }
     } catch (error) {
       const recipient = Array.isArray(options.to)
         ? options.to.join(", ")
         : options.to;
-      console.error(`Email sending failed to ${recipient}:`, error);
+      console.error(`Resend email failed to ${recipient}:`, error);
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

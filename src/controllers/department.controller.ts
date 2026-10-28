@@ -11,7 +11,7 @@ import { eq, ilike } from "drizzle-orm";
 /**
  * @desc    Get all departments
  * @route   GET /api/departments
- * @access  Private/Admin,SeniorManagement
+ * @access  Private
  */
 export const getDepartments = async (
   req: Request,

@@ -37,7 +37,7 @@ router.use("/:departmentId/requisitions", requisitionRouter);
  * /api/departments:
  *   get:
  *     summary: Get all departments
- *     description: Retrieve a list of all departments. Can be filtered and paginated.
+ *     description: Retrieve a list of departments for authenticated users. Can be filtered and paginated.
  *     tags: [Departments]
  *     security:
  *       - bearerAuth: []
@@ -148,15 +148,7 @@ router.use("/:departmentId/requisitions", requisitionRouter);
  *       403:
  *         description: Forbidden
  */
-router.get(
-  "/",
-  authorize(
-    UserRole.ADMIN,
-    UserRole.PROCUREMENT_MANAGER, // Consolidated role
-    UserRole.SENIOR_MANAGEMENT // @nullified - now consolidated with PROCUREMENT_MANAGER
-  ),
-  getDepartments
-);
+router.get("/", getDepartments);
 
 /**
  * @swagger

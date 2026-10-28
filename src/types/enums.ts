@@ -32,6 +32,7 @@ export enum RequisitionStatus {
   HR_REVIEW = "hrReview", // For working tools
   HR_APPROVED = "hrApproved",
   HR_REJECTED = "hrRejected",
+  HOD_TOOL_COMMENT = "hodToolComment",
   HOF_APPROVED = "hofApproved",
   HOF_REJECTED = "hofRejected",
   PROCUREMENT_REVIEW = "procurementReview",

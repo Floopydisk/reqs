@@ -5,10 +5,14 @@ import {
   getMe,
   vendorLogin,
   registerVendor,
+  emailPasswordLogin,
+  startGoogleLogin,
+  completeGoogleLogin,
 } from "../controllers/auth.controller";
 import { protect } from "../middleware/auth.middleware";
 import {
   validate,
+  validateEmailPasswordLoginInput,
   validateVendorLoginInput,
   validateVendorRegistrationInput,
 } from "../middleware/requestValidator.middleware";
@@ -17,10 +21,220 @@ const router = express.Router();
 
 /**
  * @swagger
+ * /api/auth/email-login:
+ *   post:
+ *     summary: Sign in with an intranet email and password
+ *     description: The browser sends only email and password to this endpoint. Requisite signs a separate server-to-server request to the intranet using X-Requisite-Timestamp, X-Requisite-Nonce, and X-Requisite-Signature; those headers are not part of the browser request shown in Swagger DevTools. Requisite synchronizes the returned staff profile and falls back to stored credentials only for an existing local account when the intranet is unavailable.
+ *     tags: [Auth]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, password]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: staff@daystarng.org
+ *               password:
+ *                 type: string
+ *                 format: password
+ *     responses:
+ *       200:
+ *         description: Login successful. The JWT is returned in the response and an HTTP-only cookie is set.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, token, user]
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 token:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     employeeId:
+ *                       type: string
+ *                     firstName:
+ *                       type: string
+ *                     lastName:
+ *                       type: string
+ *                     email:
+ *                       type: string
+ *                       format: email
+ *                     role:
+ *                       type: string
+ *                     designation:
+ *                       type: string
+ *       400:
+ *         description: Email or password is missing or invalid
+ *       401:
+ *         description: Invalid credentials or no matching intranet account
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       403:
+ *         description: Intranet or local account is inactive
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       409:
+ *         description: Email matches multiple intranet staff accounts
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       502:
+ *         description: Intranet profile invalid, authentication failed, or signature rejected
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       503:
+ *         description: Intranet is unavailable and this account has never been provisioned locally, or intranet signing is not configured
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ */
+router.post(
+  "/email-login",
+  validate(validateEmailPasswordLoginInput),
+  emailPasswordLogin
+);
+
+/**
+ * @swagger
+ * /api/auth/google:
+ *   get:
+ *     summary: Start Google sign-in
+ *     description: Redirects the browser to Google OpenID Connect. For frontend popup sign-in, pass a frontendOrigin configured in GOOGLE_AUTH_FRONTEND_ORIGINS. Configure GOOGLE_REDIRECT_URI as the absolute URL of /api/auth/google/callback.
+ *     tags: [Auth]
+ *     security: []
+ *     parameters:
+ *       - in: query
+ *         name: frontendOrigin
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: uri
+ *         description: Exact frontend origin; must be allowlisted in GOOGLE_AUTH_FRONTEND_ORIGINS
+ *     responses:
+ *       302:
+ *         description: Redirect to Google for consent and authentication
+ *       503:
+ *         description: Google authentication is not configured
+ */
+router.get("/google", startGoogleLogin);
+
+/**
+ * @swagger
+ * /api/auth/google/callback:
+ *   get:
+ *     summary: Complete Google sign-in
+ *     description: Google OAuth callback. Verifies the Google identity, looks up and syncs the verified email's staff profile in the intranet, and falls back to an existing local account if the intranet is unavailable.
+ *     tags: [Auth]
+ *     security: []
+ *     parameters:
+ *       - in: query
+ *         name: code
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Authorization code supplied by Google
+ *       - in: query
+ *         name: state
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Signed OAuth state issued by the Google sign-in endpoint
+ *     responses:
+ *       200:
+ *         description: Google sign-in successful; returns the authenticated user and JWT
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [success, data]
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     token:
+ *                       type: string
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: string
+ *                         employeeId:
+ *                           type: string
+ *                         firstName:
+ *                           type: string
+ *                         lastName:
+ *                           type: string
+ *                         email:
+ *                           type: string
+ *                           format: email
+ *                         role:
+ *                           type: string
+ *                         designation:
+ *                           type: string
+ *       400:
+ *         description: Missing authorization code or invalid/expired state
+ *       401:
+ *         description: Google identity is unverified, intranet account is inactive, or no matching intranet account exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       403:
+ *         description: Staff account is inactive
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       409:
+ *         description: Email matches multiple intranet staff accounts
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       502:
+ *         description: Google verification failed, intranet profile is invalid, or request signature was rejected
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ *       503:
+ *         description: Intranet is unavailable and this account has never been provisioned locally
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AuthError'
+ */
+router.get("/google/callback", completeGoogleLogin);
+
+/**
+ * @swagger
  * /api/auth/login:
  *   post:
  *     summary: Login user
  *     tags: [Auth]
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:
@@ -29,7 +243,6 @@ const router = express.Router();
  *             type: object
  *             required:
  *               - userId
- *               - bypass
  *             properties:
  *               userId:
  *                 type: string
@@ -37,7 +250,8 @@ const router = express.Router();
  *                 example: "47"
  *               bypass:
  *                 type: string
- *                 description: Bypass value for authentication
+ *                 description: Optional bypass value; defaults to the configured intranet bypass
+ *                 nullable: true
  *                 example: "iGNOre"
  *     responses:
  *       200:
