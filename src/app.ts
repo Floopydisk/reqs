@@ -13,8 +13,7 @@ import { setupSwagger } from "./config/swagger";
 import { connectDB as connectDatabase } from "./config/database";
 import { initializeScheduler } from "./utils/scheduler";
 
-// Instead of require('dotenv').config();
-require('dotenv').config({ override: true }); 
+config({ override: true }); 
 
 // Load environment variables
 const envConfig = config({ path: join(__dirname, "..", ".env") });

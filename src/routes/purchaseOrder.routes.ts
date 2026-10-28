@@ -15,8 +15,10 @@ import {
   submitPurchaseOrder,
   hofApprovePO,
   hhrApprovePO,
+  hhraApprovePO,
   hofRejectPO,
   hhrRejectPO,
+  hhraRejectPO,
   rejectPO,
 } from "../controllers/purchaseOrder.controller";
 import { protect } from "../middleware/auth.middleware";
@@ -364,7 +366,7 @@ router.put(
  * /api/purchase-orders/{id}/hhr-approve:
  *   put:
  *     summary: HHR approve purchase order (Final approval)
- *     description: Head of HR provides final approval for a purchase order. Requires HoF approval first.
+ *     description: Head of HR & Admin (HHRA) provides final approval for a purchase order. Requires Head of Finance (HoF) approval first (status must be hofApproved).
  *     tags: [Purchase Orders - Approval]
  *     security:
  *       - bearerAuth: []
@@ -389,11 +391,11 @@ router.put(
  *       200:
  *         description: Purchase order fully approved
  *       400:
- *         description: Purchase order must be approved by HoF first or HHR already approved
+ *         description: Purchase order must be approved by HoF first or HHRA already approved
  *       401:
  *         description: Not authorized
  *       403:
- *         description: Forbidden - Only Head of HR can approve
+ *         description: Forbidden - Only Head of HR & Admin (HHRA) can approve
  *       404:
  *         description: Purchase order not found
  */
@@ -401,6 +403,50 @@ router.put(
   "/:id/hhr-approve",
   authorize(UserRole.HEAD_OF_HR, UserRole.DEPARTMENT_HEAD, UserRole.HHRA),
   hhrApprovePO,
+);
+
+/**
+ * @swagger
+ * /api/purchase-orders/{id}/hhra-approve:
+ *   put:
+ *     summary: HHRA approve purchase order (Final approval)
+ *     description: Head of Human Resources & Admin (HHRA) provides final approval for a purchase order after HoF approval. Requires status to be hofApproved.
+ *     tags: [Purchase Orders - Approval]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Purchase order ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               feedback:
+ *                 type: string
+ *                 example: Final approval granted by HHRA for procurement
+ *     responses:
+ *       200:
+ *         description: Purchase order fully approved by HHRA
+ *       400:
+ *         description: Purchase order must be approved by HoF first or HHRA already approved
+ *       401:
+ *         description: Not authorized
+ *       403:
+ *         description: Forbidden - Only Head of HR & Admin (HHRA) can approve
+ *       404:
+ *         description: Purchase order not found
+ */
+router.put(
+  "/:id/hhra-approve",
+  authorize(UserRole.HEAD_OF_HR, UserRole.DEPARTMENT_HEAD, UserRole.HHRA),
+  hhraApprovePO,
 );
 
 /**
@@ -469,6 +515,40 @@ router.put(
   "/:id/hhr-reject",
   authorize(UserRole.HEAD_OF_HR, UserRole.HHRA, UserRole.DEPARTMENT_HEAD),
   hhrRejectPO,
+);
+
+/**
+ * @swagger
+ * /api/purchase-orders/{id}/hhra-reject:
+ *   put:
+ *     summary: HHRA reject purchase order
+ *     description: Reject a purchase order as Head of HR & Admin (HHRA) after a valid HoF approval. A reason or feedback is required and recorded in the approval audit trail.
+ *     tags: [Purchase Orders - Approval]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason: { type: string, example: Required HR & Admin clearance is incomplete. }
+ *               feedback: { type: string, example: Required HR & Admin clearance is incomplete. }
+ *     responses:
+ *       200: { description: Purchase order rejected by HHRA }
+ *       400: { description: Reason missing or PO is not awaiting HHRA decision }
+ *       403: { description: Actor is not an eligible HHRA }
+ *       404: { description: Purchase order not found }
+ */
+router.put(
+  "/:id/hhra-reject",
+  authorize(UserRole.HEAD_OF_HR, UserRole.HHRA, UserRole.DEPARTMENT_HEAD),
+  hhraRejectPO,
 );
 
 /**

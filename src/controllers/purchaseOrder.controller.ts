@@ -1268,18 +1268,24 @@ export const generatePurchaseOrderPDF = async (
     //   req.user?.role === UserRole.VENDOR &&
     //   purchaseOrder.vendor._id.toString() !== req.user?.vendor?.toString()
     // ) {
-    // Gate PDF download on full approval (both HOF and HHR) (Requirement H10)
+    // Gate PDF download on full approval (both HOF and HHRA) (Requirement H10)
+    const hasHof = purchaseOrder.approvals?.some(
+      (a: any) => a.approverRole === "hof" && a.approvedAt && a.status !== "rejected",
+    );
     const hasHhr = purchaseOrder.approvals?.some(
-      (a: any) => a.approverRole === "hhr" && a.approvedAt && a.status !== "rejected",
+      (a: any) =>
+        (a.approverRole === "hhr" || a.approverRole === "hhra") &&
+        a.approvedAt &&
+        a.status !== "rejected",
     );
     const isApproved =
-      purchaseOrder.status === PurchaseOrderStatus.APPROVED && hasHhr;
+      purchaseOrder.status === PurchaseOrderStatus.APPROVED && hasHof && hasHhr;
 
     if (!isApproved) {
       res.status(400).json({
         success: false,
         message:
-          "Purchase order must be fully approved (both HOF and HHR) before downloading PDF",
+          "Purchase order must be fully approved (both HOF and HHRA) before downloading PDF",
       });
       return;
     }
@@ -2052,6 +2058,13 @@ export const submitPurchaseOrder = async (
 
     await purchaseOrder.save();
 
+    // Update parent requisition status to PO_PENDING_APPROVAL
+    if (purchaseOrder.requisition) {
+      await Requisition.findByIdAndUpdate(purchaseOrder.requisition, {
+        status: RequisitionStatus.PO_PENDING_APPROVAL,
+      });
+    }
+
     res.status(200).json({
       success: true,
       message: "Purchase order submitted successfully for approval",
@@ -2091,6 +2104,10 @@ export const hofApprovePO = async (
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||
+        (user.designation &&
+          (user.designation.toLowerCase().includes("finance") ||
+            user.designation.toLowerCase().includes("accounts") ||
+            user.designation.toLowerCase().includes("cfo"))) ||
         (user.role === UserRole.DEPARTMENT_HEAD &&
           user.department &&
           ((user.department as any).code === "5" ||
@@ -2129,7 +2146,7 @@ export const hofApprovePO = async (
 
     // Check if HoF already approved
     const hofApproval = purchaseOrder.approvals.find(
-      (approval: any) => approval.approverRole === "hof",
+      (approval: any) => approval.approverRole === "hof" && approval.status !== "rejected",
     );
 
     if (hofApproval?.approvedAt) {
@@ -2143,6 +2160,7 @@ export const hofApprovePO = async (
     // Add or update HoF approval
     if (hofApproval) {
       hofApproval.approver = userId;
+      hofApproval.status = "approved";
       hofApproval.approvedAt = new Date();
       if (feedback) {
         hofApproval.feedback = feedback;
@@ -2151,6 +2169,7 @@ export const hofApprovePO = async (
       purchaseOrder.approvals.push({
         approver: userId,
         approverRole: "hof",
+        status: "approved",
         approvedAt: new Date(),
         feedback: feedback || "",
       } as any);
@@ -2161,10 +2180,17 @@ export const hofApprovePO = async (
 
     await purchaseOrder.save();
 
+    // Update Requisition status to PO_PENDING_APPROVAL
+    if (purchaseOrder.requisition) {
+      await Requisition.findByIdAndUpdate(purchaseOrder.requisition, {
+        status: RequisitionStatus.PO_PENDING_APPROVAL,
+      });
+    }
+
     res.status(200).json({
       success: true,
       message:
-        "Purchase order approved by Head of Finance. Awaiting HHR approval.",
+        "Purchase order approved by Head of Finance. Awaiting HHRA final approval.",
       data: purchaseOrder,
     });
   } catch (error) {
@@ -2172,9 +2198,9 @@ export const hofApprovePO = async (
   }
 };
 
-// @desc    Head of HR approve PO (Second approval - requires HoF approval first)
-// @route   PUT /api/purchase-orders/:id/hhr-approve
-// @access  Private/HHR
+// @desc    Head of HR / HHRA approve PO (Final approval - strictly requires HoF approval first)
+// @route   PUT /api/purchase-orders/:id/hhr-approve, PUT /api/purchase-orders/:id/hhra-approve
+// @access  Private/HHR/HHRA
 export const hhrApprovePO = async (
   req: Request,
   res: Response,
@@ -2198,6 +2224,10 @@ export const hhrApprovePO = async (
       user &&
       (user.role === UserRole.HEAD_OF_HR ||
         user.role === UserRole.HHRA ||
+        (user.designation &&
+          (user.designation.toLowerCase().includes("human resources") ||
+            user.designation.toLowerCase().includes("hr") ||
+            user.designation.toLowerCase().includes("hhra"))) ||
         (user.role === UserRole.DEPARTMENT_HEAD &&
           user.department &&
           ((user.department as any).code === "4" ||
@@ -2208,7 +2238,7 @@ export const hhrApprovePO = async (
     if (!user || !isHrHOD) {
       res.status(403).json({
         success: false,
-        message: "Only Head of Human Resources can provide final approval",
+        message: "Only Head of Human Resources & Admin (HHRA) can provide final approval",
       });
       return;
     }
@@ -2231,7 +2261,7 @@ export const hhrApprovePO = async (
       res.status(400).json({
         success: false,
         message:
-          "Purchase order must be approved by Head of Finance before HHR approval",
+          "Purchase order must be approved by Head of Finance before HHRA approval",
         currentStatus: purchaseOrder.status,
       });
       return;
@@ -2239,33 +2269,37 @@ export const hhrApprovePO = async (
 
     // Verify HoF approval exists and is completed
     const hofApproval = purchaseOrder.approvals.find(
-      (approval: any) => approval.approverRole === "hof",
+      (approval: any) => approval.approverRole === "hof" && approval.status !== "rejected",
     );
 
     if (!hofApproval || !hofApproval.approvedAt) {
       res.status(400).json({
         success: false,
-        message: "Head of Finance approval is required before HHR can approve",
+        message: "Head of Finance approval is required before HHRA can approve",
       });
       return;
     }
 
-    // Check if HHR already approved
+    // Check if HHRA already approved
     const hhrApproval = purchaseOrder.approvals.find(
-      (approval: any) => approval.approverRole === "hhr",
+      (approval: any) =>
+        (approval.approverRole === "hhr" || approval.approverRole === "hhra") &&
+        approval.status !== "rejected",
     );
 
     if (hhrApproval?.approvedAt) {
       res.status(400).json({
         success: false,
-        message: "Purchase order already approved by Head of Human Resources",
+        message: "Purchase order already approved by HHRA",
       });
       return;
     }
 
-    // Add or update HHR approval
+    // Add or update HHRA approval
     if (hhrApproval) {
       hhrApproval.approver = userId;
+      hhrApproval.approverRole = "hhra";
+      hhrApproval.status = "approved";
       hhrApproval.approvedAt = new Date();
       if (feedback) {
         hhrApproval.feedback = feedback;
@@ -2273,7 +2307,8 @@ export const hhrApprovePO = async (
     } else {
       purchaseOrder.approvals.push({
         approver: userId,
-        approverRole: "hhr",
+        approverRole: "hhra",
+        status: "approved",
         approvedAt: new Date(),
         feedback: feedback || "",
       } as any);
@@ -2284,7 +2319,7 @@ export const hhrApprovePO = async (
 
     await purchaseOrder.save();
 
-    // Update Requisition status to PO_APPROVED and record poApprovedAt (Requirement B1, B2)
+    // Update Requisition status to PO_APPROVED and record poApprovedAt
     if (purchaseOrder.requisition) {
       await Requisition.findByIdAndUpdate(purchaseOrder.requisition, {
         status: RequisitionStatus.PO_APPROVED,
@@ -2294,7 +2329,7 @@ export const hhrApprovePO = async (
 
     res.status(200).json({
       success: true,
-      message: "Purchase order fully approved. Ready for processing.",
+      message: "Purchase order fully approved by HHRA. Ready for processing.",
       data: purchaseOrder,
     });
   } catch (error) {
@@ -2302,10 +2337,13 @@ export const hhrApprovePO = async (
   }
 };
 
-// @desc    Reject PO (HoF or HHR)
-// @route   PUT /api/purchase-orders/:id/reject
-// @access  Private/HOF/HHR
-type PurchaseOrderRejectStage = "hof" | "hhr";
+// Canonical HHRA alias
+export const hhraApprovePO = hhrApprovePO;
+
+// @desc    Reject PO (HoF or HHRA)
+// @route   PUT /api/purchase-orders/:id/reject, /hof-reject, /hhr-reject, /hhra-reject
+// @access  Private/HOF/HHRA
+type PurchaseOrderRejectStage = "hof" | "hhr" | "hhra";
 
 const rejectPurchaseOrder = async (
   req: Request,
@@ -2345,6 +2383,10 @@ const rejectPurchaseOrder = async (
     const isFinanceHOD =
       user &&
       (user.role === UserRole.HEAD_OF_FINANCE ||
+        (user.designation &&
+          (user.designation.toLowerCase().includes("finance") ||
+            user.designation.toLowerCase().includes("accounts") ||
+            user.designation.toLowerCase().includes("cfo"))) ||
         (user.role === UserRole.DEPARTMENT_HEAD &&
           user.department &&
           ((user.department as any).code === "5" ||
@@ -2356,6 +2398,10 @@ const rejectPurchaseOrder = async (
       user &&
       (user.role === UserRole.HEAD_OF_HR ||
         user.role === UserRole.HHRA ||
+        (user.designation &&
+          (user.designation.toLowerCase().includes("human resources") ||
+            user.designation.toLowerCase().includes("hr") ||
+            user.designation.toLowerCase().includes("hhra"))) ||
         (user.role === UserRole.DEPARTMENT_HEAD &&
           user.department &&
           ((user.department as any).code === "4" ||
@@ -2367,7 +2413,7 @@ const rejectPurchaseOrder = async (
       res.status(403).json({
         success: false,
         message:
-          "Only Head of Finance or Head of HR can reject purchase orders",
+          "Only Head of Finance or Head of HR & Admin (HHRA) can reject purchase orders",
       });
       return;
     }
@@ -2384,16 +2430,20 @@ const rejectPurchaseOrder = async (
       return;
     }
 
-    const approverRole: PurchaseOrderRejectStage = isFinanceHOD ? "hof" : "hhr";
-    if (requiredStage && approverRole !== requiredStage) {
+    const approverRole: PurchaseOrderRejectStage = isFinanceHOD ? "hof" : "hhra";
+    const normalizedRequired = requiredStage === "hhr" ? "hhra" : requiredStage;
+    if (normalizedRequired && approverRole !== normalizedRequired) {
       res.status(403).json({
         success: false,
-        message: "Only the " + (requiredStage === "hof" ? "Head of Finance" : "Head of HR") + " can use this endpoint",
+        message:
+          "Only the " +
+          (normalizedRequired === "hof" ? "Head of Finance" : "Head of HR & Admin (HHRA)") +
+          " can use this endpoint",
       });
       return;
     }
 
-    // HOF may decline a submitted PO; HHR may only decline after HOF approval.
+    // HOF may decline a submitted PO; HHRA may only decline after HOF approval.
     const expectedStatus =
       approverRole === "hof"
         ? PurchaseOrderStatus.SUBMITTED
@@ -2408,7 +2458,9 @@ const rejectPurchaseOrder = async (
 
     // Record the rejection in approvals
     const existingApproval = purchaseOrder.approvals.find(
-      (approval: any) => approval.approverRole === approverRole,
+      (approval: any) =>
+        approval.approverRole === approverRole ||
+        (approverRole === "hhra" && approval.approverRole === "hhr"),
     );
 
     if (existingApproval) {
@@ -2435,9 +2487,18 @@ const rejectPurchaseOrder = async (
 
     await purchaseOrder.save();
 
+    // If requisition exists, update requisition status to PROCUREMENT_REVIEW
+    if (purchaseOrder.requisition) {
+      await Requisition.findByIdAndUpdate(purchaseOrder.requisition, {
+        status: RequisitionStatus.PROCUREMENT_REVIEW,
+      });
+    }
+
     res.status(200).json({
       success: true,
-      message: "Purchase order rejected by " + (isFinanceHOD ? "Head of Finance" : "Head of HR"),
+      message:
+        "Purchase order rejected by " +
+        (isFinanceHOD ? "Head of Finance" : "Head of HR & Admin (HHRA)"),
       data: purchaseOrder,
     });
   } catch (error) {
@@ -2464,3 +2525,9 @@ export const hhrRejectPO = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => rejectPurchaseOrder(req, res, next, "hhr");
+
+export const hhraRejectPO = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => rejectPurchaseOrder(req, res, next, "hhra");

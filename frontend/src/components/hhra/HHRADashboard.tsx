@@ -67,13 +67,13 @@ interface ProcurementManagerDashboardProps {
     | "rfqs"
     | "pos";
   routePrefix?: string;
-  approvalType?: "hhr" | "hof";
+  approvalType?: "hhr" | "hof" | "hhra";
 }
 
 export default function HHRADashboard({
   page = "hhraDashboard",
   routePrefix = "/hhra",
-  approvalType = "hhr",
+  approvalType = "hhra",
 }: ProcurementManagerDashboardProps = {}) {
   const [loading, setLoading] = useState(false);
   const [requisitions, setRequisitions] = useState<RequisitionShape[]>([]);
@@ -177,8 +177,9 @@ export default function HHRADashboard({
     if (!token) return;
     setApprovingPoId(poId);
     try {
+      const endpointName = approvalType === "hof" ? "hof-approve" : "hhra-approve";
       const response = await fetch(
-        `${API_BASE_URL}/purchase-orders/${poId}/${approvalType}-approve`,
+        `${API_BASE_URL}/purchase-orders/${poId}/${endpointName}`,
         {
           method: "PUT",
           headers: {
@@ -382,7 +383,8 @@ export default function HHRADashboard({
         const showApprove =
           (approvalType === "hof" &&
             (row.status === "issued" || row.status === "submitted")) ||
-          (approvalType === "hhr" && row.status === "hofApproved");
+          ((approvalType === "hhr" || approvalType === "hhra") &&
+            row.status === "hofApproved");
 
         return (
           <div className="flex gap-2 items-center">

@@ -90,13 +90,21 @@ const statusMap: Record<string, StatusMap> = {
     color: "bg-green-100 text-green-800",
   },
   // ── PO approvals ──────────────────────────────────────────────────────────
+  poPendingApproval: {
+    label: "PO Pending Approval",
+    color: "bg-amber-100 text-amber-800",
+  },
   hofApproved: {
-    label: "Approved by Finance",
-    color: "bg-teal-100 text-teal-800",
+    label: "Approved by Finance (Awaiting HHRA)",
+    color: "bg-blue-100 text-blue-800",
   },
   hhrApproved: {
     label: "Approved by HHRA",
-    color: "bg-teal-100 text-teal-800",
+    color: "bg-green-100 text-green-800",
+  },
+  poApproved: {
+    label: "Purchase Order Approved",
+    color: "bg-green-100 text-green-800",
   },
   // ── RFQ / PO / generic ────────────────────────────────────────────────────
   issued: { label: "Issued", color: "bg-green-100 text-green-800" },
